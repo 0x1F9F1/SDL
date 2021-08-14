@@ -56,6 +56,33 @@ typedef void (SDLCALL * SDL_WindowsMessageHook)(void *userdata, void *hWnd, unsi
 extern DECLSPEC void SDLCALL SDL_SetWindowsMessageHook(SDL_WindowsMessageHook callback, void *userdata);
 
 /**
+ * A callback for when the message pump is blocking
+ * 
+ * \param userdata what was passed as `userdata` to SDL_SetBlockingMessageCallback()
+ * \param blocking 0 when requesting an initial timer period, non-zero if blocking
+ * \returns the requested time period in milliseconds between messages
+ */
+typedef int (SDLCALL * SDL_BlockingMessageCallback)(void* userdata, int blocking);
+
+/**
+ * Set a callback for when the message pump is potentially blocking
+ * 
+ * The callback is called once before pumping the message queue,
+ * then any number of times during it, based on the timer period.
+ * The return value of the callback specifies the timer period in milliseconds:
+ *  > 0 resets the timer, setting it to the requested period
+ *  < 0 stops the timer, producing no more callbacks until the next call to pump the message queue
+ *    0 continues using the current period
+ * 
+ * The time between callbacks is likely to be inaccurate, unpredicable, and subject to OS restrictions.
+ * On Windows, the period is clamped to a minimum of 10 ms.
+ * 
+ * \param callback The SDL_BlockingMessageCallback function to call.
+ * \param userdata a pointer to pass to every iteration of `callback`
+ */
+extern DECLSPEC void SDLCALL SDL_SetBlockingMessageCallback(SDL_BlockingMessageCallback callback, void *userdata);
+
+/**
  * Get the D3D9 adapter index that matches the specified display index.
  *
  * The returned adapter index can be passed to `IDirect3D9::CreateDevice` and

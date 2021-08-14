@@ -822,3 +822,4 @@
 #define SDL_RenderSetVSync SDL_RenderSetVSync_REAL
 #define SDL_asprintf SDL_asprintf_REAL
 #define SDL_vasprintf SDL_vasprintf_REAL
+#define SDL_SetBlockingMessageCallback SDL_SetBlockingMessageCallback_REAL

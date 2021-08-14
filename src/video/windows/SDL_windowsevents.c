@@ -1490,6 +1490,29 @@ void SDL_SetWindowsMessageHook(SDL_WindowsMessageHook callback, void *userdata)
     g_WindowsMessageHookData = userdata;
 }
 
+/* A function called when the message queue is blocked due to things such as resizing */
+static SDL_BlockingMessageCallback g_BlockingMessageCallback = NULL;
+static void *g_BlockingMessageCallbackData = NULL;
+
+void SDL_SetBlockingMessageCallback(SDL_BlockingMessageCallback callback, void *userdata)
+{
+    g_BlockingMessageCallback = callback;
+    g_BlockingMessageCallbackData = userdata;
+}
+
+static VOID CALLBACK WIN_BlockingTimerProc(HWND hWnd, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
+{
+    int period = -1;
+
+    if (g_BlockingMessageCallback)
+        period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, 1);
+
+    if (period < 0)
+        KillTimer(hWnd, nIDEvent);
+    else if (period > 0)
+        SetTimer(hWnd, nIDEvent, (UINT) period, WIN_BlockingTimerProc);
+}
+
 int
 WIN_WaitEventTimeout(_THIS, int timeout)
 {
@@ -1542,6 +1565,16 @@ WIN_PumpEvents(_THIS)
     int new_messages = 0;
 
     if (g_WindowsEnableMessageLoop) {
+        UINT_PTR timer_id = 0;
+
+        if (g_BlockingMessageCallback) {
+            int period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, 0);
+
+            if (period > 0) {
+                timer_id = SetTimer(NULL, 0, (UINT) period, WIN_BlockingTimerProc);
+            }
+        }
+
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (g_WindowsMessageHook) {
                 g_WindowsMessageHook(g_WindowsMessageHookData, msg.hwnd, msg.message, msg.wParam, msg.lParam);
@@ -1564,6 +1597,9 @@ WIN_PumpEvents(_THIS)
                 }
             }
         }
+
+        if (timer_id)
+            KillTimer(NULL, timer_id);
     }
 
     /* Windows loses a shift KEYUP event when you have both pressed at once and let go of one.
