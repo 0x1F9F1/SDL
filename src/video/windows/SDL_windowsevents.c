@@ -598,6 +598,31 @@ WIN_KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
     return 1;
 }
 
+
+/* A function called when the message queue is blocked due to things such as resizing */
+static SDL_BlockingMessageCallback g_BlockingMessageCallback = NULL;
+static void *g_BlockingMessageCallbackData = NULL;
+
+void SDL_SetBlockingMessageCallback(SDL_BlockingMessageCallback callback, void *userdata)
+{
+    g_BlockingMessageCallback = callback;
+    g_BlockingMessageCallbackData = userdata;
+}
+
+static VOID CALLBACK WIN_BlockingTimerProc(HWND hWnd, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
+{
+    int period = -1;
+
+    if (g_BlockingMessageCallback)
+        period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, 1);
+
+    if (period < 0)
+        KillTimer(hWnd, nIDEvent);
+    else if (period > 0)
+        SetTimer(hWnd, nIDEvent, (UINT) period, WIN_BlockingTimerProc);
+}
+
+
 LRESULT CALLBACK
 WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -1276,6 +1301,10 @@ WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             RECT rect;
             if (GetUpdateRect(hwnd, &rect, FALSE)) {
                 ValidateRect(hwnd, NULL);
+
+                if (g_BlockingMessageCallback)
+                    g_BlockingMessageCallback(g_BlockingMessageCallbackData, 2);
+
                 SDL_SendWindowEvent(data->window, SDL_WINDOWEVENT_EXPOSED, 0, 0);
             }
         }
@@ -1488,29 +1517,6 @@ void SDL_SetWindowsMessageHook(SDL_WindowsMessageHook callback, void *userdata)
 {
     g_WindowsMessageHook = callback;
     g_WindowsMessageHookData = userdata;
-}
-
-/* A function called when the message queue is blocked due to things such as resizing */
-static SDL_BlockingMessageCallback g_BlockingMessageCallback = NULL;
-static void *g_BlockingMessageCallbackData = NULL;
-
-void SDL_SetBlockingMessageCallback(SDL_BlockingMessageCallback callback, void *userdata)
-{
-    g_BlockingMessageCallback = callback;
-    g_BlockingMessageCallbackData = userdata;
-}
-
-static VOID CALLBACK WIN_BlockingTimerProc(HWND hWnd, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
-{
-    int period = -1;
-
-    if (g_BlockingMessageCallback)
-        period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, 1);
-
-    if (period < 0)
-        KillTimer(hWnd, nIDEvent);
-    else if (period > 0)
-        SetTimer(hWnd, nIDEvent, (UINT) period, WIN_BlockingTimerProc);
 }
 
 int
