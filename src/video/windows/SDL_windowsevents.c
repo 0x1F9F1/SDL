@@ -609,20 +609,6 @@ void SDL_SetBlockingMessageCallback(SDL_BlockingMessageCallback callback, void *
     g_BlockingMessageCallbackData = userdata;
 }
 
-static VOID CALLBACK WIN_BlockingTimerProc(HWND hWnd, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
-{
-    int period = -1;
-
-    if (g_BlockingMessageCallback)
-        period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, 1);
-
-    if (period < 0)
-        KillTimer(hWnd, nIDEvent);
-    else if (period > 0)
-        SetTimer(hWnd, nIDEvent, (UINT) period, WIN_BlockingTimerProc);
-}
-
-
 LRESULT CALLBACK
 WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -1303,7 +1289,7 @@ WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 ValidateRect(hwnd, NULL);
 
                 if (g_BlockingMessageCallback)
-                    g_BlockingMessageCallback(g_BlockingMessageCallbackData, 2);
+                    g_BlockingMessageCallback(g_BlockingMessageCallbackData, data->window, WM_PAINT);
 
                 SDL_SendWindowEvent(data->window, SDL_WINDOWEVENT_EXPOSED, 0, 0);
             }
@@ -1562,6 +1548,19 @@ WIN_SendWakeupEvent(_THIS, SDL_Window *window)
     PostMessage(data->hwnd, data->videodata->_SDL_WAKEUP, 0, 0);
 }
 
+static VOID CALLBACK WIN_BlockingTimerProc(HWND hWnd, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
+{
+    int period = -1;
+
+    if (g_BlockingMessageCallback)
+        period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, NULL, WM_TIMER);
+
+    if (period > 0)
+        SetTimer(hWnd, nIDEvent, (UINT) period, WIN_BlockingTimerProc);
+    else if (period < 0)
+        KillTimer(hWnd, nIDEvent);
+}
+
 void
 WIN_PumpEvents(_THIS)
 {
@@ -1574,7 +1573,7 @@ WIN_PumpEvents(_THIS)
         UINT_PTR timer_id = 0;
 
         if (g_BlockingMessageCallback) {
-            int period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, 0);
+            int period = g_BlockingMessageCallback(g_BlockingMessageCallbackData, NULL, 0);
 
             if (period > 0) {
                 timer_id = SetTimer(NULL, 0, (UINT) period, WIN_BlockingTimerProc);
@@ -1604,8 +1603,9 @@ WIN_PumpEvents(_THIS)
             }
         }
 
-        if (timer_id)
+        if (timer_id) {
             KillTimer(NULL, timer_id);
+        }
     }
 
     /* Windows loses a shift KEYUP event when you have both pressed at once and let go of one.

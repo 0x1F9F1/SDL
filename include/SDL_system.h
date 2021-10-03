@@ -62,7 +62,7 @@ extern DECLSPEC void SDLCALL SDL_SetWindowsMessageHook(SDL_WindowsMessageHook ca
  * \param blocking 0 when requesting an initial timer period, non-zero if blocking
  * \returns the requested time period in milliseconds between messages
  */
-typedef int (SDLCALL * SDL_BlockingMessageCallback)(void* userdata, int blocking);
+typedef int (SDLCALL * SDL_BlockingMessageCallback)(void* userdata, SDL_Window* window, int reason);
 
 /**
  * Set a callback for when the message pump is potentially blocking
