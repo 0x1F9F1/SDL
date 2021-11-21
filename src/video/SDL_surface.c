@@ -1463,6 +1463,7 @@ int SDL_PremultiplyAlpha(int width, int height,
     Uint32 srcR, srcG, srcB, srcA;
     Uint32 dstpixel;
     Uint32 dstR, dstG, dstB, dstA;
+    Uint32 amul;
 
     if (!src) {
         return SDL_InvalidParamError("src");
@@ -1493,9 +1494,10 @@ int SDL_PremultiplyAlpha(int width, int height,
 
             /* Alpha pre-multiplication of each component. */
             dstA = srcA;
-            dstR = (srcA * srcR) / 255;
-            dstG = (srcA * srcG) / 255;
-            dstB = (srcA * srcB) / 255;
+            amul = srcA * 0x8081;
+            dstR = (amul * srcR) >> 23;
+            dstG = (amul * srcG) >> 23;
+            dstB = (amul * srcB) >> 23;
 
             /* ARGB8888 pixel recomposition. */
             ARGB8888_FROM_RGBA(dstpixel, dstR, dstG, dstB, dstA);
