@@ -1640,6 +1640,38 @@ D3D11_QueueDrawPoints(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL
 }
 
 static int
+D3D11_QueueDrawLines(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_FPoint * points, int count)
+{
+    VertexPositionColor *verts = (VertexPositionColor *) SDL_AllocateRenderVertices(renderer, count * sizeof (VertexPositionColor), 0, &cmd->data.draw.first);
+    int i;
+    const SDL_Color color = {
+        .r = cmd->data.draw.r,
+        .g = cmd->data.draw.g,
+        .b = cmd->data.draw.b,
+        .a = cmd->data.draw.a
+    };
+
+    if (!verts) {
+        return -1;
+    }
+
+    cmd->data.draw.count = count;
+
+    for (i = 0; i < count; i++) {
+        verts->pos.x = points[i].x + 0.5f;
+        verts->pos.y = points[i].y + 0.5f;
+        verts->tex.x = 0.0f;
+        verts->tex.y = 0.0f;
+        verts->color = color;
+        verts++;
+    }
+
+    SDL_AdjustLineForDiamondExit(points, count, &verts[-1].pos.x, &verts[-1].pos.y);
+
+    return 0;
+}
+
+static int
 D3D11_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
                     const float *xy, int xy_stride, const SDL_Color *color, int color_stride, const float *uv, int uv_stride,
                     int num_vertices, const void *indices, int num_indices, int size_indices,
@@ -2126,12 +2158,8 @@ D3D11_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *ver
                 const size_t count = cmd->data.draw.count;
                 const size_t first = cmd->data.draw.first;
                 const size_t start = first / sizeof (VertexPositionColor);
-                const VertexPositionColor *verts = (VertexPositionColor *) (((Uint8 *) vertices) + first);
                 D3D11_SetDrawState(renderer, cmd, rendererData->pixelShaders[SHADER_SOLID], 0, NULL, NULL, NULL);
                 D3D11_DrawPrimitives(renderer, D3D11_PRIMITIVE_TOPOLOGY_LINESTRIP, start, count);
-                if (verts[0].pos.x != verts[count - 1].pos.x || verts[0].pos.y != verts[count - 1].pos.y) {
-                    D3D11_DrawPrimitives(renderer, D3D11_PRIMITIVE_TOPOLOGY_POINTLIST, start + (count-1), 1);
-                }
                 break;
             }
 
@@ -2386,7 +2414,7 @@ D3D11_CreateRenderer(SDL_Window * window, Uint32 flags)
     renderer->QueueSetViewport = D3D11_QueueSetViewport;
     renderer->QueueSetDrawColor = D3D11_QueueSetViewport;  /* SetViewport and SetDrawColor are (currently) no-ops. */
     renderer->QueueDrawPoints = D3D11_QueueDrawPoints;
-    renderer->QueueDrawLines = D3D11_QueueDrawPoints;  /* lines and points queue vertices the same way. */
+    renderer->QueueDrawLines = D3D11_QueueDrawLines;
     renderer->QueueGeometry = D3D11_QueueGeometry;
     renderer->RunCommandQueue = D3D11_RunCommandQueue;
     renderer->RenderReadPixels = D3D11_RenderReadPixels;

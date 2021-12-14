@@ -832,6 +832,32 @@ D3D_QueueDrawPoints(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_F
 }
 
 static int
+D3D_QueueDrawLines(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_FPoint * points, int count)
+{
+    const DWORD color = D3DCOLOR_ARGB(cmd->data.draw.a, cmd->data.draw.r, cmd->data.draw.g, cmd->data.draw.b);
+    const size_t vertslen = count * sizeof (Vertex);
+    Vertex *verts = (Vertex *) SDL_AllocateRenderVertices(renderer, vertslen, 0, &cmd->data.draw.first);
+    int i;
+
+    if (!verts) {
+        return -1;
+    }
+
+    SDL_memset(verts, '\0', vertslen);
+    cmd->data.draw.count = count;
+
+    for (i = 0; i < count; i++, verts++) {
+        verts->x = points[i].x;
+        verts->y = points[i].y;
+        verts->color = color;
+    }
+
+    SDL_AdjustLineForDiamondExit(points, count, &verts[-1].x, &verts[-1].y);
+
+    return 0;
+}
+
+static int
 D3D_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
         const float *xy, int xy_stride, const SDL_Color *color, int color_stride, const float *uv, int uv_stride,
         int num_vertices, const void *indices, int num_indices, int size_indices,
@@ -1210,24 +1236,12 @@ D3D_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
             case SDL_RENDERCMD_DRAW_LINES: {
                 const size_t count = cmd->data.draw.count;
                 const size_t first = cmd->data.draw.first;
-                const Vertex *verts = (Vertex *) (((Uint8 *) vertices) + first);
-
-                /* DirectX 9 has the same line rasterization semantics as GDI,
-                   so we need to close the endpoint of the line with a second draw call. */
-                const SDL_bool close_endpoint = ((count == 2) || (verts[0].x != verts[count-1].x) || (verts[0].y != verts[count-1].y));
-
                 SetDrawState(data, cmd);
-
                 if (vbo) {
                     IDirect3DDevice9_DrawPrimitive(data->device, D3DPT_LINESTRIP, (UINT) (first / sizeof (Vertex)), (UINT) (count - 1));
-                    if (close_endpoint) {
-                        IDirect3DDevice9_DrawPrimitive(data->device, D3DPT_POINTLIST, (UINT) ((first / sizeof (Vertex)) + (count - 1)), 1);
-                    }
                 } else {
+                    const Vertex *verts = (Vertex *) (((Uint8 *) vertices) + first);
                     IDirect3DDevice9_DrawPrimitiveUP(data->device, D3DPT_LINESTRIP, (UINT) (count - 1), verts, sizeof (Vertex));
-                    if (close_endpoint) {
-                        IDirect3DDevice9_DrawPrimitiveUP(data->device, D3DPT_POINTLIST, 1, &verts[count-1], sizeof (Vertex));
-                    }
                 }
                 break;
             }
@@ -1567,7 +1581,7 @@ D3D_CreateRenderer(SDL_Window * window, Uint32 flags)
     renderer->QueueSetViewport = D3D_QueueSetViewport;
     renderer->QueueSetDrawColor = D3D_QueueSetViewport;  /* SetViewport and SetDrawColor are (currently) no-ops. */
     renderer->QueueDrawPoints = D3D_QueueDrawPoints;
-    renderer->QueueDrawLines = D3D_QueueDrawPoints;  /* lines and points queue vertices the same way. */
+    renderer->QueueDrawLines = D3D_QueueDrawLines;
     renderer->QueueGeometry = D3D_QueueGeometry;
     renderer->RunCommandQueue = D3D_RunCommandQueue;
     renderer->RenderReadPixels = D3D_RenderReadPixels;

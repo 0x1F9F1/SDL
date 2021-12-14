@@ -284,6 +284,8 @@ extern void *SDL_AllocateRenderVertices(SDL_Renderer *renderer, const size_t num
 extern int SDL_PrivateLowerBlitScaled(SDL_Surface * src, SDL_Rect * srcrect, SDL_Surface * dst, SDL_Rect * dstrect, SDL_ScaleMode scaleMode);
 extern int SDL_PrivateUpperBlitScaled(SDL_Surface * src, const SDL_Rect * srcrect, SDL_Surface * dst, SDL_Rect * dstrect, SDL_ScaleMode scaleMode);
 
+extern void SDL_AdjustLineForDiamondExit(const SDL_FPoint * points, int count, float* x, float* y);
+
 #endif /* SDL_sysrender_h_ */
 
 /* vi: set ts=4 sw=4 expandtab: */

@@ -4370,4 +4370,36 @@ SDL_RenderSetVSync(SDL_Renderer * renderer, int vsync)
     return SDL_Unsupported();
 }
 
+void SDL_AdjustLineForDiamondExit(const SDL_FPoint * points, int count, float* x, float* y)
+{
+    float xend = points[count - 1].x;
+    float yend = points[count - 1].y;
+
+    /* Diamond-exit Lines are drawn as "half-open", meaning that the final
+       fragment is not drawn. To counteract this, extend the final line by one
+       pixel unless the points form a loop (as that would cause overdraw). */
+    if (xend != points[0].x || yend != points[0].y) {
+        const float offset = 1.0f;
+        float deltax = xend - points[count - 2].x;
+        float deltay = yend - points[count - 2].y;
+
+        /* Avoid sqrt + div for horizontal and vertical lines */
+        if (deltay == 0.0f) {
+            deltax = SDL_copysignf(offset, deltax);
+        } else if (deltay == 0.0f) {
+            deltay = SDL_copysignf(offset, deltay);
+        } else {
+            float mag = SDL_sqrtf(deltax * deltax + deltay * deltay);
+            if (mag != 0.0f) {
+                mag = offset / mag;
+                deltax *= mag;
+                deltay *= mag;
+            }
+        }
+
+        *x += deltax;
+        *y += deltay;
+    }
+}
+
 /* vi: set ts=4 sw=4 expandtab: */

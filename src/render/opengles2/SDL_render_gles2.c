@@ -697,7 +697,6 @@ GLES2_QueueDrawLines(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_
 {
     const SDL_bool colorswap = (renderer->target && (renderer->target->format == SDL_PIXELFORMAT_ARGB8888 || renderer->target->format == SDL_PIXELFORMAT_RGB888));
     int i;
-    GLfloat prevx, prevy;
     SDL_VertexSolid *verts = (SDL_VertexSolid *) SDL_AllocateRenderVertices(renderer, count * sizeof(*verts), 0, &cmd->data.draw.first);
     SDL_Color color;
     color.r = cmd->data.draw.r;
@@ -717,34 +716,15 @@ GLES2_QueueDrawLines(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_
 
     cmd->data.draw.count = count;
 
-    /* 0.5f offset to hit the center of the pixel. */
-    prevx = 0.5f + points->x;
-    prevy = 0.5f + points->y;
-    verts->position.x = prevx;
-    verts->position.y = prevy;
-    verts->color = color;
-    verts++;
-
-    /* bump the end of each line segment out a quarter of a pixel, to provoke
-       the diamond-exit rule. Without this, you won't just drop the last
-       pixel of the last line segment, but you might also drop pixels at the
-       edge of any given line segment along the way too. */
-    for (i = 1; i < count; i++) {
-        const GLfloat xstart = prevx;
-        const GLfloat ystart = prevy;
-        const GLfloat xend = points[i].x + 0.5f;  /* 0.5f to hit pixel center. */
-        const GLfloat yend = points[i].y + 0.5f;
-        /* bump a little in the direction we are moving in. */
-        const GLfloat deltax = xend - xstart;
-        const GLfloat deltay = yend - ystart;
-        const GLfloat angle = SDL_atan2f(deltay, deltax);
-        prevx = xend + (SDL_cosf(angle) * 0.25f);
-        prevy = yend + (SDL_sinf(angle) * 0.25f);
-        verts->position.x = prevx;
-        verts->position.y = prevy;
+    for (i = 0; i < count; i++) {
+        /* Offset points by 0.5 to hit the fragment center (diamond-exit rule) */
+        verts->position.x = points[i].x + 0.5f;
+        verts->position.y = points[i].y + 0.5f;
         verts->color = color;
         verts++;
     }
+
+    SDL_AdjustLineForDiamondExit(points, count, &verts[-1].position.x, &verts[-1].position.y);
 
     return 0;
 }
