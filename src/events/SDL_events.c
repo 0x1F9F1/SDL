@@ -961,8 +961,12 @@ SDL_WaitEventTimeout(SDL_Event * event, int timeout)
         break;
     default:
         /* Check whether we have reached the end of the poll cycle, and no more events are left */
-        if (timeout == 0 && event && event->type == SDL_POLLSENTINEL) {
-            return (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) == 1);
+        if (event && event->type == SDL_POLLSENTINEL) {
+            if (timeout == 0) {
+                return (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) == 1);
+            } else {
+                break;
+            }
         }
         /* Has existing events */
         return 1;
@@ -1004,7 +1008,7 @@ SDL_WaitEventTimeout(SDL_Event * event, int timeout)
             SDL_Delay(1);
             break;
         default:
-            if (timeout == 0 && SDL_GetEventState(SDL_POLLSENTINEL) == SDL_ENABLE) {
+            if (SDL_GetEventState(SDL_POLLSENTINEL) == SDL_ENABLE) {
                 /* We are at the start of a poll cycle with at least one new event.
                    Add a sentinel event to mark the end of the cycle. */
                 SDL_Event sentinel;
