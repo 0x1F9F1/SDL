@@ -151,9 +151,7 @@ typedef struct GLES2_RenderData
     GLES2_ProgramCache program_cache;
     Uint8 clear_r, clear_g, clear_b, clear_a;
 
-    GLuint vertex_buffers[8];
-    size_t vertex_buffer_size[8];
-    int current_vertex_buffer;
+    GLuint vertex_buffer;
     GLES2_DrawStateCache drawstate;
 } GLES2_RenderData;
 
@@ -1087,8 +1085,7 @@ GLES2_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *ver
 {
     GLES2_RenderData *data = (GLES2_RenderData *) renderer->driverdata;
     const SDL_bool colorswap = (renderer->target && (renderer->target->format == SDL_PIXELFORMAT_ARGB8888 || renderer->target->format == SDL_PIXELFORMAT_RGB888));
-    const int vboidx = data->current_vertex_buffer;
-    const GLuint vbo = data->vertex_buffers[vboidx];
+    const GLuint vbo = data->vertex_buffer;
 
     if (GLES2_ActivateRenderer(renderer) < 0) {
         return -1;
@@ -1106,20 +1103,9 @@ GLES2_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *ver
         }
     }
 
-    /* upload the new VBO data for this set of commands. */
     data->glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    if (data->vertex_buffer_size[vboidx] < vertsize) {
-        data->glBufferData(GL_ARRAY_BUFFER, vertsize, vertices, GL_STREAM_DRAW);
-        data->vertex_buffer_size[vboidx] = vertsize;
-    } else {
-        data->glBufferSubData(GL_ARRAY_BUFFER, 0, vertsize, vertices);
-    }
-
-    /* cycle through a few VBOs so the GL has some time with the data before we replace it. */
-    data->current_vertex_buffer++;
-    if (data->current_vertex_buffer >= SDL_arraysize(data->vertex_buffers)) {
-        data->current_vertex_buffer = 0;
-    }
+    data->glBufferData(GL_ARRAY_BUFFER, vertsize, NULL, GL_STREAM_DRAW);
+    data->glBufferSubData(GL_ARRAY_BUFFER, 0, vertsize, vertices);
 
     while (cmd) {
         switch (cmd->command) {
@@ -1308,7 +1294,7 @@ GLES2_DestroyRenderer(SDL_Renderer *renderer)
                 data->framebuffers = nextnode;
             }
 
-            data->glDeleteBuffers(SDL_arraysize(data->vertex_buffers), data->vertex_buffers);
+            data->glDeleteBuffers(1, &data->vertex_buffer);
             GL_CheckError("", renderer);
 
             SDL_GL_DeleteContext(data->context);
@@ -2072,7 +2058,7 @@ GLES2_CreateRenderer(SDL_Window *window, Uint32 flags)
     renderer->info.max_texture_height = value;
 
     /* we keep a few of these and cycle through them, so data can live for a few frames. */
-    data->glGenBuffers(SDL_arraysize(data->vertex_buffers), data->vertex_buffers);
+    data->glGenBuffers(1, &data->vertex_buffer);
 
     data->framebuffers = NULL;
     data->glGetIntegerv(GL_FRAMEBUFFER_BINDING, &window_framebuffer);
