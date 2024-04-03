@@ -186,11 +186,27 @@ static void SDL_Convert_F32_to_S32_Scalar(Sint32 *dst, const float *src, int num
 
 // end fallback scalar converters
 
+// Convert forwards, when sizeof(*src) >= sizeof(*dst)
+#define CONVERT_16_FWD(CVT1, CVT16)                          \
+    int i = 0;                                               \
+    if (num_samples >= 16) {                                 \
+        while ((uintptr_t)(&dst[i]) & 15) { CVT1  ++i;     } \
+        while ((i + 16) <= num_samples)   { CVT16 i += 16; } \
+    }                                                        \
+    while (i < num_samples)               { CVT1  ++i;     }
+
+// Convert backwards, when sizeof(*src) <= sizeof(*dst)
+#define CONVERT_16_REV(CVT1, CVT16)                          \
+    int i = num_samples;                                     \
+    if (i >= 16) {                                           \
+        while ((uintptr_t)(&dst[i]) & 15) { --i;     CVT1  } \
+        while (i >= 16)                   { i -= 16; CVT16 } \
+    }                                                        \
+    while (i > 0)                         { --i;     CVT1  }
+
 #ifdef SDL_SSE2_INTRINSICS
 static void SDL_TARGETING("sse2") SDL_Convert_S8_to_F32_SSE2(float *dst, const Sint8 *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Flip the sign bit to convert from S8 to U8 format
      * 2) Construct a float in the range [65536.0, 65538.0)
      * 3) Shift the float range to [-1.0, 1.0)
@@ -202,9 +218,9 @@ static void SDL_TARGETING("sse2") SDL_Convert_S8_to_F32_SSE2(float *dst, const S
 
     LOG_DEBUG_AUDIO_CONVERT("S8", "F32 (using SSE2)");
 
-    while (i >= 16) {
-        i -= 16;
-
+    CONVERT_16_REV({
+        _mm_store_ss(&dst[i], _mm_add_ss(_mm_castsi128_ps(_mm_cvtsi32_si128((Uint8)src[i] ^ 0x47800080u)), offset));
+    }, {
         const __m128i bytes = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&src[i]), flipper);
 
         const __m128i shorts1 = _mm_unpacklo_epi8(bytes, zero);
@@ -215,22 +231,15 @@ static void SDL_TARGETING("sse2") SDL_Convert_S8_to_F32_SSE2(float *dst, const S
         const __m128 floats3 = _mm_add_ps(_mm_castsi128_ps(_mm_unpacklo_epi16(shorts2, caster)), offset);
         const __m128 floats4 = _mm_add_ps(_mm_castsi128_ps(_mm_unpackhi_epi16(shorts2, caster)), offset);
 
-        _mm_storeu_ps(&dst[i], floats1);
-        _mm_storeu_ps(&dst[i + 4], floats2);
-        _mm_storeu_ps(&dst[i + 8], floats3);
-        _mm_storeu_ps(&dst[i + 12], floats4);
-    }
-
-    while (i) {
-        --i;
-        _mm_store_ss(&dst[i], _mm_add_ss(_mm_castsi128_ps(_mm_cvtsi32_si128((Uint8)src[i] ^ 0x47800080u)), offset));
-    }
+        _mm_store_ps(&dst[i], floats1);
+        _mm_store_ps(&dst[i + 4], floats2);
+        _mm_store_ps(&dst[i + 8], floats3);
+        _mm_store_ps(&dst[i + 12], floats4);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_U8_to_F32_SSE2(float *dst, const Uint8 *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Construct a float in the range [65536.0, 65538.0)
      * 2) Shift the float range to [-1.0, 1.0)
      * dst[i] = i2f(src[i] | 0x47800000) - 65537.0 */
@@ -240,9 +249,9 @@ static void SDL_TARGETING("sse2") SDL_Convert_U8_to_F32_SSE2(float *dst, const U
 
     LOG_DEBUG_AUDIO_CONVERT("U8", "F32 (using SSE2)");
 
-    while (i >= 16) {
-        i -= 16;
-
+    CONVERT_16_REV({
+        _mm_store_ss(&dst[i], _mm_add_ss(_mm_castsi128_ps(_mm_cvtsi32_si128((Uint8)src[i] ^ 0x47800000u)), offset));
+    }, {
         const __m128i bytes = _mm_loadu_si128((const __m128i *)&src[i]);
 
         const __m128i shorts1 = _mm_unpacklo_epi8(bytes, zero);
@@ -253,22 +262,15 @@ static void SDL_TARGETING("sse2") SDL_Convert_U8_to_F32_SSE2(float *dst, const U
         const __m128 floats3 = _mm_add_ps(_mm_castsi128_ps(_mm_unpacklo_epi16(shorts2, caster)), offset);
         const __m128 floats4 = _mm_add_ps(_mm_castsi128_ps(_mm_unpackhi_epi16(shorts2, caster)), offset);
 
-        _mm_storeu_ps(&dst[i], floats1);
-        _mm_storeu_ps(&dst[i + 4], floats2);
-        _mm_storeu_ps(&dst[i + 8], floats3);
-        _mm_storeu_ps(&dst[i + 12], floats4);
-    }
-
-    while (i) {
-        --i;
-        _mm_store_ss(&dst[i], _mm_add_ss(_mm_castsi128_ps(_mm_cvtsi32_si128((Uint8)src[i] ^ 0x47800000u)), offset));
-    }
+        _mm_store_ps(&dst[i], floats1);
+        _mm_store_ps(&dst[i + 4], floats2);
+        _mm_store_ps(&dst[i + 8], floats3);
+        _mm_store_ps(&dst[i + 12], floats4);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_S16_to_F32_SSE2(float *dst, const Sint16 *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Flip the sign bit to convert from S16 to U16 format
      * 2) Construct a float in the range [256.0, 258.0)
      * 3) Shift the float range to [-1.0, 1.0)
@@ -279,9 +281,9 @@ static void SDL_TARGETING("sse2") SDL_Convert_S16_to_F32_SSE2(float *dst, const 
 
     LOG_DEBUG_AUDIO_CONVERT("S16", "F32 (using SSE2)");
 
-    while (i >= 16) {
-        i -= 16;
-
+    CONVERT_16_REV({
+        _mm_store_ss(&dst[i], _mm_add_ss(_mm_castsi128_ps(_mm_cvtsi32_si128((Uint16)src[i] ^ 0x43808000u)), offset));
+    }, {
         const __m128i shorts1 = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&src[i]), flipper);
         const __m128i shorts2 = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&src[i + 8]), flipper);
 
@@ -290,30 +292,23 @@ static void SDL_TARGETING("sse2") SDL_Convert_S16_to_F32_SSE2(float *dst, const 
         const __m128 floats3 = _mm_add_ps(_mm_castsi128_ps(_mm_unpacklo_epi16(shorts2, caster)), offset);
         const __m128 floats4 = _mm_add_ps(_mm_castsi128_ps(_mm_unpackhi_epi16(shorts2, caster)), offset);
 
-        _mm_storeu_ps(&dst[i], floats1);
-        _mm_storeu_ps(&dst[i + 4], floats2);
-        _mm_storeu_ps(&dst[i + 8], floats3);
-        _mm_storeu_ps(&dst[i + 12], floats4);
-    }
-
-    while (i) {
-        --i;
-        _mm_store_ss(&dst[i], _mm_add_ss(_mm_castsi128_ps(_mm_cvtsi32_si128((Uint16)src[i] ^ 0x43808000u)), offset));
-    }
+        _mm_store_ps(&dst[i], floats1);
+        _mm_store_ps(&dst[i + 4], floats2);
+        _mm_store_ps(&dst[i + 8], floats3);
+        _mm_store_ps(&dst[i + 12], floats4);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_S32_to_F32_SSE2(float *dst, const Sint32 *src, int num_samples)
 {
-    int i = num_samples;
-
     // dst[i] = f32(src[i]) / f32(0x80000000)
     const __m128 scaler = _mm_set1_ps(DIVBY2147483648);
 
     LOG_DEBUG_AUDIO_CONVERT("S32", "F32 (using SSE2)");
 
-    while (i >= 16) {
-        i -= 16;
-
+    CONVERT_16_FWD({
+        _mm_store_ss(&dst[i], _mm_mul_ss(_mm_cvt_si2ss(_mm_setzero_ps(), src[i]), scaler));
+    }, {
         const __m128i ints1 = _mm_loadu_si128((const __m128i *)&src[i]);
         const __m128i ints2 = _mm_loadu_si128((const __m128i *)&src[i + 4]);
         const __m128i ints3 = _mm_loadu_si128((const __m128i *)&src[i + 8]);
@@ -324,22 +319,15 @@ static void SDL_TARGETING("sse2") SDL_Convert_S32_to_F32_SSE2(float *dst, const 
         const __m128 floats3 = _mm_mul_ps(_mm_cvtepi32_ps(ints3), scaler);
         const __m128 floats4 = _mm_mul_ps(_mm_cvtepi32_ps(ints4), scaler);
 
-        _mm_storeu_ps(&dst[i], floats1);
-        _mm_storeu_ps(&dst[i + 4], floats2);
-        _mm_storeu_ps(&dst[i + 8], floats3);
-        _mm_storeu_ps(&dst[i + 12], floats4);
-    }
-
-    while (i) {
-        --i;
-        _mm_store_ss(&dst[i], _mm_mul_ss(_mm_cvt_si2ss(_mm_setzero_ps(), src[i]), scaler));
-    }
+        _mm_store_ps(&dst[i], floats1);
+        _mm_store_ps(&dst[i + 4], floats2);
+        _mm_store_ps(&dst[i + 8], floats3);
+        _mm_store_ps(&dst[i + 12], floats4);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S8_SSE2(Sint8 *dst, const float *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Shift the float range from [-1.0, 1.0] to [98303.0, 98305.0]
      * 2) Extract the lowest 16 bits and clamp to [-128, 127]
      * Overflow is correctly handled for inputs between roughly [-255.0, 255.0]
@@ -349,11 +337,14 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S8_SSE2(Sint8 *dst, const f
 
     LOG_DEBUG_AUDIO_CONVERT("F32", "S8 (using SSE2)");
 
-    while (i >= 16) {
-        const __m128 floats1 = _mm_loadu_ps(&src[0]);
-        const __m128 floats2 = _mm_loadu_ps(&src[4]);
-        const __m128 floats3 = _mm_loadu_ps(&src[8]);
-        const __m128 floats4 = _mm_loadu_ps(&src[12]);
+    CONVERT_16_FWD({
+        const __m128i ints = _mm_castps_si128(_mm_add_ss(_mm_load_ss(&src[i]), offset));
+        dst[i] = (Sint8)(_mm_cvtsi128_si32(_mm_packs_epi16(ints, ints)) & 0xFF);
+    }, {
+        const __m128 floats1 = _mm_loadu_ps(&src[i]);
+        const __m128 floats2 = _mm_loadu_ps(&src[i + 4]);
+        const __m128 floats3 = _mm_loadu_ps(&src[i + 8]);
+        const __m128 floats4 = _mm_loadu_ps(&src[i + 12]);
 
         const __m128i ints1 = _mm_castps_si128(_mm_add_ps(floats1, offset));
         const __m128i ints2 = _mm_castps_si128(_mm_add_ps(floats2, offset));
@@ -365,27 +356,12 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S8_SSE2(Sint8 *dst, const f
 
         const __m128i bytes = _mm_packus_epi16(shorts1, shorts2);
 
-        _mm_storeu_si128((__m128i*)dst, bytes);
-
-        i -= 16;
-        src += 16;
-        dst += 16;
-    }
-
-    while (i) {
-        const __m128i ints = _mm_castps_si128(_mm_add_ss(_mm_load_ss(src), offset));
-        *dst = (Sint8)(_mm_cvtsi128_si32(_mm_packs_epi16(ints, ints)) & 0xFF);
-
-        --i;
-        ++src;
-        ++dst;
-    }
+        _mm_store_si128((__m128i*)&dst[i], bytes);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_F32_to_U8_SSE2(Uint8 *dst, const float *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Shift the float range from [-1.0, 1.0] to [98304.0, 98306.0]
      * 2) Extract the lowest 16 bits and clamp to [0, 255]
      * Overflow is correctly handled for inputs between roughly [-254.0, 254.0]
@@ -395,11 +371,14 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_U8_SSE2(Uint8 *dst, const f
 
     LOG_DEBUG_AUDIO_CONVERT("F32", "U8 (using SSE2)");
 
-    while (i >= 16) {
-        const __m128 floats1 = _mm_loadu_ps(&src[0]);
-        const __m128 floats2 = _mm_loadu_ps(&src[4]);
-        const __m128 floats3 = _mm_loadu_ps(&src[8]);
-        const __m128 floats4 = _mm_loadu_ps(&src[12]);
+    CONVERT_16_FWD({
+        const __m128i ints = _mm_castps_si128(_mm_add_ss(_mm_load_ss(&src[i]), offset));
+        dst[i] = (Uint8)(_mm_cvtsi128_si32(_mm_packus_epi16(ints, ints)) & 0xFF);
+    }, {
+        const __m128 floats1 = _mm_loadu_ps(&src[i]);
+        const __m128 floats2 = _mm_loadu_ps(&src[i + 4]);
+        const __m128 floats3 = _mm_loadu_ps(&src[i + 8]);
+        const __m128 floats4 = _mm_loadu_ps(&src[i + 12]);
 
         const __m128i ints1 = _mm_castps_si128(_mm_add_ps(floats1, offset));
         const __m128i ints2 = _mm_castps_si128(_mm_add_ps(floats2, offset));
@@ -411,27 +390,12 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_U8_SSE2(Uint8 *dst, const f
 
         const __m128i bytes = _mm_packus_epi16(shorts1, shorts2);
 
-        _mm_storeu_si128((__m128i*)dst, bytes);
-
-        i -= 16;
-        src += 16;
-        dst += 16;
-    }
-
-    while (i) {
-        const __m128i ints = _mm_castps_si128(_mm_add_ss(_mm_load_ss(src), offset));
-        *dst = (Uint8)(_mm_cvtsi128_si32(_mm_packus_epi16(ints, ints)) & 0xFF);
-
-        --i;
-        ++src;
-        ++dst;
-    }
+        _mm_store_si128((__m128i*)&dst[i], bytes);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S16_SSE2(Sint16 *dst, const float *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Shift the float range from [-1.0, 1.0] to [256.0, 258.0]
      * 2) Shift the int range from [0x43800000, 0x43810000] to [-32768,32768]
      * 3) Clamp to range [-32768,32767]
@@ -441,11 +405,14 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S16_SSE2(Sint16 *dst, const
 
     LOG_DEBUG_AUDIO_CONVERT("F32", "S16 (using SSE2)");
 
-    while (i >= 16) {
-        const __m128 floats1 = _mm_loadu_ps(&src[0]);
-        const __m128 floats2 = _mm_loadu_ps(&src[4]);
-        const __m128 floats3 = _mm_loadu_ps(&src[8]);
-        const __m128 floats4 = _mm_loadu_ps(&src[12]);
+    CONVERT_16_FWD({
+        const __m128i ints = _mm_sub_epi32(_mm_castps_si128(_mm_add_ss(_mm_load_ss(&src[i]), offset)), _mm_castps_si128(offset));
+        dst[i] = (Sint16)(_mm_cvtsi128_si32(_mm_packs_epi32(ints, ints)) & 0xFFFF);
+    }, {
+        const __m128 floats1 = _mm_loadu_ps(&src[i]);
+        const __m128 floats2 = _mm_loadu_ps(&src[i + 4]);
+        const __m128 floats3 = _mm_loadu_ps(&src[i + 8]);
+        const __m128 floats4 = _mm_loadu_ps(&src[i + 12]);
 
         const __m128i ints1 = _mm_sub_epi32(_mm_castps_si128(_mm_add_ps(floats1, offset)), _mm_castps_si128(offset));
         const __m128i ints2 = _mm_sub_epi32(_mm_castps_si128(_mm_add_ps(floats2, offset)), _mm_castps_si128(offset));
@@ -455,28 +422,13 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S16_SSE2(Sint16 *dst, const
         const __m128i shorts1 = _mm_packs_epi32(ints1, ints2);
         const __m128i shorts2 = _mm_packs_epi32(ints3, ints4);
 
-        _mm_storeu_si128((__m128i*)&dst[0], shorts1);
-        _mm_storeu_si128((__m128i*)&dst[8], shorts2);
-
-        i -= 16;
-        src += 16;
-        dst += 16;
-    }
-
-    while (i) {
-        const __m128i ints = _mm_sub_epi32(_mm_castps_si128(_mm_add_ss(_mm_load_ss(src), offset)), _mm_castps_si128(offset));
-        *dst = (Sint16)(_mm_cvtsi128_si32(_mm_packs_epi32(ints, ints)) & 0xFFFF);
-
-        --i;
-        ++src;
-        ++dst;
-    }
+        _mm_store_si128((__m128i*)&dst[i], shorts1);
+        _mm_store_si128((__m128i*)&dst[i + 8], shorts2);
+    })
 }
 
 static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S32_SSE2(Sint32 *dst, const float *src, int num_samples)
 {
-    int i = num_samples;
-
     /* 1) Scale the float range from [-1.0, 1.0] to [-2147483648.0, 2147483648.0]
      * 2) Convert to integer (values too small/large become 0x80000000 = -2147483648)
      * 3) Fixup values which were too large (0x80000000 ^ 0xFFFFFFFF = 2147483647)
@@ -485,11 +437,16 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S32_SSE2(Sint32 *dst, const
 
     LOG_DEBUG_AUDIO_CONVERT("F32", "S32 (using SSE2)");
 
-    while (i >= 16) {
-        const __m128 floats1 = _mm_loadu_ps(&src[0]);
-        const __m128 floats2 = _mm_loadu_ps(&src[4]);
-        const __m128 floats3 = _mm_loadu_ps(&src[8]);
-        const __m128 floats4 = _mm_loadu_ps(&src[12]);
+    CONVERT_16_FWD({
+        const __m128 floats = _mm_load_ss(&src[i]);
+        const __m128 values = _mm_mul_ss(floats, limit);
+        const __m128i ints = _mm_xor_si128(_mm_cvttps_epi32(values), _mm_castps_si128(_mm_cmpge_ss(values, limit)));
+        dst[i] = (Sint32)_mm_cvtsi128_si32(ints);
+    }, {
+        const __m128 floats1 = _mm_loadu_ps(&src[i]);
+        const __m128 floats2 = _mm_loadu_ps(&src[i + 4]);
+        const __m128 floats3 = _mm_loadu_ps(&src[i + 8]);
+        const __m128 floats4 = _mm_loadu_ps(&src[i + 12]);
 
         const __m128 values1 = _mm_mul_ps(floats1, limit);
         const __m128 values2 = _mm_mul_ps(floats2, limit);
@@ -501,26 +458,11 @@ static void SDL_TARGETING("sse2") SDL_Convert_F32_to_S32_SSE2(Sint32 *dst, const
         const __m128i ints3 = _mm_xor_si128(_mm_cvttps_epi32(values3), _mm_castps_si128(_mm_cmpge_ps(values3, limit)));
         const __m128i ints4 = _mm_xor_si128(_mm_cvttps_epi32(values4), _mm_castps_si128(_mm_cmpge_ps(values4, limit)));
 
-        _mm_storeu_si128((__m128i*)&dst[0], ints1);
-        _mm_storeu_si128((__m128i*)&dst[4], ints2);
-        _mm_storeu_si128((__m128i*)&dst[8], ints3);
-        _mm_storeu_si128((__m128i*)&dst[12], ints4);
-
-        i -= 16;
-        src += 16;
-        dst += 16;
-    }
-
-    while (i) {
-        const __m128 floats = _mm_load_ss(src);
-        const __m128 values = _mm_mul_ss(floats, limit);
-        const __m128i ints = _mm_xor_si128(_mm_cvttps_epi32(values), _mm_castps_si128(_mm_cmpge_ss(values, limit)));
-        *dst = (Sint32)_mm_cvtsi128_si32(ints);
-
-        --i;
-        ++src;
-        ++dst;
-    }
+        _mm_store_si128((__m128i*)&dst[i], ints1);
+        _mm_store_si128((__m128i*)&dst[i + 4], ints2);
+        _mm_store_si128((__m128i*)&dst[i + 8], ints3);
+        _mm_store_si128((__m128i*)&dst[i + 12], ints4);
+    })
 }
 #endif
 
