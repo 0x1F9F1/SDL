@@ -383,20 +383,10 @@ static int UpdateAudioStreamInputSpec(SDL_AudioStream *stream, const SDL_AudioSp
         return 0;
     }
 
-    const size_t history_buffer_allocation = SDL_GetResamplerHistoryFrames() * SDL_AUDIO_FRAMESIZE(*spec);
-    Uint8 *history_buffer = stream->history_buffer;
-
-    if (stream->history_buffer_allocation < history_buffer_allocation) {
-        history_buffer = (Uint8 *) SDL_aligned_alloc(SDL_SIMDGetAlignment(), history_buffer_allocation);
-        if (!history_buffer) {
-            return -1;
-        }
-        SDL_aligned_free(stream->history_buffer);
-        stream->history_buffer = history_buffer;
-        stream->history_buffer_allocation = history_buffer_allocation;
+    if (SDL_ResetAudioQueueHistory(stream->queue, SDL_GetResamplerHistoryFrames()) != 0) {
+        return -1;
     }
 
-    SDL_memset(history_buffer, SDL_GetSilenceValueForFormat(spec->format), history_buffer_allocation);
     SDL_copyp(&stream->input_spec, spec);
 
     return 0;
@@ -413,7 +403,7 @@ SDL_AudioStream *SDL_CreateAudioStream(const SDL_AudioSpec *src_spec, const SDL_
     }
 
     retval->freq_ratio = 1.0f;
-    retval->queue = SDL_CreateAudioQueue(4096);
+    retval->queue = SDL_CreateAudioQueue(8192);
 
     if (!retval->queue) {
         SDL_free(retval);
@@ -625,21 +615,11 @@ static int CheckAudioStreamIsFullySetup(SDL_AudioStream *stream)
     return 0;
 }
 
-int SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len)
+static int PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, void* userdata, SDL_ReleaseAudioBufferCallback callback)
 {
 #if DEBUG_AUDIOSTREAM
     SDL_Log("AUDIOSTREAM: wants to put %d bytes", len);
 #endif
-
-    if (!stream) {
-        return SDL_InvalidParamError("stream");
-    } else if (!buf) {
-        return SDL_InvalidParamError("buf");
-    } else if (len < 0) {
-        return SDL_InvalidParamError("len");
-    } else if (len == 0) {
-        return 0; // nothing to do.
-    }
 
     SDL_LockMutex(stream->lock);
 
@@ -655,24 +635,13 @@ int SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len)
 
     SDL_AudioTrack* track = NULL;
 
-    // When copying in large amounts of data, try and do as much work as possible
-    // outside of the stream lock, otherwise the output device is likely to be starved.
-    const int large_input_thresh = 1024 * 1024;
-
-    if (len >= large_input_thresh) {
-        SDL_AudioSpec src_spec;
-        SDL_copyp(&src_spec, &stream->src_spec);
-
-        SDL_UnlockMutex(stream->lock);
-
-        size_t chunk_size = SDL_GetAudioQueueChunkSize(stream->queue);
-        track = SDL_CreateChunkedAudioTrack(&src_spec, (const Uint8 *)buf, len, chunk_size);
+    if (callback) {
+        track = SDL_CreateAudioTrack(stream->queue, &stream->src_spec, (Uint8 *)buf, len, len, userdata, callback);
 
         if (!track) {
+            SDL_UnlockMutex(stream->lock);
             return -1;
         }
-
-        SDL_LockMutex(stream->lock);
     }
 
     const int prev_available = stream->put_callback ? SDL_GetAudioStreamAvailable(stream) : 0;
@@ -686,7 +655,6 @@ int SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len)
     }
 
     if (retval == 0) {
-        stream->total_bytes_queued += len;
         if (stream->put_callback) {
             const int newavail = SDL_GetAudioStreamAvailable(stream) - prev_available;
             stream->put_callback(stream->put_callback_userdata, stream, newavail, newavail);
@@ -696,6 +664,67 @@ int SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len)
     SDL_UnlockMutex(stream->lock);
 
     return retval;
+}
+
+static void SDLCALL FreeAllocatedAudioBuffer(void *userdata, const void *buf, int len)
+{
+    SDL_free((void*) buf);
+}
+
+int SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len)
+{
+    if (!stream) {
+        return SDL_InvalidParamError("stream");
+    } else if (!buf) {
+        return SDL_InvalidParamError("buf");
+    } else if (len < 0) {
+        return SDL_InvalidParamError("len");
+    } else if (len == 0) {
+        return 0; // nothing to do.
+    }
+
+    // When copying in large amounts of data, try and do as much work as possible
+    // outside of the stream lock, otherwise the output device is likely to be starved.
+    const int large_input_thresh = 64 * 1024;
+
+    if (len >= large_input_thresh) {
+        void* data = SDL_malloc(len);
+
+        if (!data) {
+            return -1;
+        }
+
+        SDL_memcpy(data, buf, len);
+        buf = data;
+
+        int ret = PutAudioStreamBuffer(stream, buf, len, NULL, FreeAllocatedAudioBuffer);
+
+        if (ret < 0) {
+            SDL_free(data);
+        }
+
+        return ret;
+    }
+
+    return PutAudioStreamBuffer(stream, buf, len, NULL, NULL);
+}
+
+int SDL_PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, void* userdata, SDL_ReleaseAudioBufferCallback callback)
+{
+    if (!stream) {
+        return SDL_InvalidParamError("stream");
+    } else if (!buf) {
+        return SDL_InvalidParamError("buf");
+    } else if (len < 0) {
+        return SDL_InvalidParamError("len");
+    } else if (!callback) {
+        return SDL_InvalidParamError("callback");
+    } else if (len == 0) {
+        callback(userdata, buf, len);
+        return 0; // nothing to do.
+    }
+
+    return PutAudioStreamBuffer(stream, buf, len, userdata, callback);
 }
 
 int SDL_FlushAudioStream(SDL_AudioStream *stream)
@@ -730,29 +759,27 @@ static Uint8 *EnsureAudioStreamWorkBufferSize(SDL_AudioStream *stream, size_t ne
     return ptr;
 }
 
-static void UpdateAudioStreamHistoryBuffer(SDL_AudioStream* stream,
-    Uint8* input_buffer, int input_bytes, Uint8* left_padding, int padding_bytes)
+// Peek into the audio queue, and see how much future data is available, up to a certain limit.
+// Returns the amount of missing data
+// Either:
+// * There is enough data available in the queue
+// * We reach a flushed track, so there is infinite silence
+// * We reach the end of the queue, so there is not enough data
+static size_t ClampMissingFutureAudioQueueBytes(SDL_AudioQueue* queue, void* iter, size_t missing)
 {
-    const int history_buffer_frames = SDL_GetResamplerHistoryFrames();
+    while (iter) {
+        SDL_AudioSpec spec;
+        SDL_bool flushed;
+        size_t avail = SDL_NextAudioQueueIter(queue, &iter, &spec, &flushed);
 
-    // Even if we aren't currently resampling, we always need to update the history buffer
-    Uint8 *history_buffer = stream->history_buffer;
-    int history_bytes = history_buffer_frames * SDL_AUDIO_FRAMESIZE(stream->input_spec);
+        if (flushed || avail >= missing) {
+            return 0;
+        }
 
-    if (left_padding) {
-        // Fill in the left padding using the history buffer
-        SDL_assert(padding_bytes <= history_bytes);
-        SDL_memcpy(left_padding, history_buffer + history_bytes - padding_bytes, padding_bytes);
+        missing -= avail;
     }
 
-    // Update the history buffer using the new input data
-    if (input_bytes >= history_bytes) {
-        SDL_memcpy(history_buffer, input_buffer + (input_bytes - history_bytes), history_bytes);
-    } else {
-        int preserve_bytes = history_bytes - input_bytes;
-        SDL_memmove(history_buffer, history_buffer + input_bytes, preserve_bytes);
-        SDL_memcpy(history_buffer + preserve_bytes, input_buffer, input_bytes);
-    }
+    return missing;
 }
 
 static Sint64 NextAudioStreamIter(SDL_AudioStream* stream, void** inout_iter,
@@ -762,31 +789,20 @@ static Sint64 NextAudioStreamIter(SDL_AudioStream* stream, void** inout_iter,
     SDL_bool flushed;
     size_t queued_bytes = SDL_NextAudioQueueIter(stream->queue, inout_iter, &spec, &flushed);
 
-    if (out_spec) {
-        SDL_copyp(out_spec, &spec);
-    }
-
-    // There is infinite audio available, whether or not we are resampling
-    if (queued_bytes == SDL_SIZE_MAX) {
-        *inout_resample_offset = 0;
-
-        if (out_flushed) {
-            *out_flushed = SDL_FALSE;
-        }
-
-        return SDL_MAX_SINT32;
-    }
-
     Sint64 resample_offset = *inout_resample_offset;
     Sint64 resample_rate = GetAudioStreamResampleRate(stream, spec.freq, resample_offset);
-    Sint64 output_frames = (Sint64)(queued_bytes / SDL_AUDIO_FRAMESIZE(spec));
+    int frame_size = SDL_AUDIO_FRAMESIZE(spec);
+
+    Sint64 output_frames = (Sint64)(queued_bytes / frame_size);
 
     if (resample_rate) {
         // Resampling requires padding frames to the left and right of the current position.
         // Past the end of the track, the right padding is filled with silence.
         // But we only want to do that if the track is actually finished (flushed).
         if (!flushed) {
-            output_frames -= SDL_GetResamplerPaddingFrames(resample_rate);
+            size_t future_bytes = SDL_GetResamplerPaddingFrames(resample_rate) * frame_size;
+
+            output_frames -= ClampMissingFutureAudioQueueBytes(stream->queue, *inout_iter, future_bytes) / frame_size;
         }
 
         output_frames = SDL_GetResamplerOutputFrames(output_frames, resample_rate, &resample_offset);
@@ -797,6 +813,10 @@ static Sint64 NextAudioStreamIter(SDL_AudioStream* stream, void** inout_iter,
     }
 
     *inout_resample_offset = resample_offset;
+
+    if (out_spec) {
+        SDL_copyp(out_spec, &spec);
+    }
 
     if (out_flushed) {
         *out_flushed = flushed;
@@ -810,37 +830,25 @@ static Sint64 GetAudioStreamAvailableFrames(SDL_AudioStream* stream, Sint64* out
     void* iter = SDL_BeginAudioQueueIter(stream->queue);
 
     Sint64 resample_offset = stream->resample_offset;
-    Sint64 output_frames = 0;
+    Sint64 total = 0;
 
     while (iter) {
-        output_frames += NextAudioStreamIter(stream, &iter, &resample_offset, NULL, NULL);
+        Sint64 avail = NextAudioStreamIter(stream, &iter, &resample_offset, NULL, NULL);
 
         // Already got loads of frames. Just clamp it to something reasonable
-        if (output_frames >= SDL_MAX_SINT32) {
-            output_frames = SDL_MAX_SINT32;
+        if (avail >= SDL_MAX_SINT32 - total) {
+            total = SDL_MAX_SINT32;
             break;
         }
+
+        total += avail;
     }
 
     if (out_resample_offset) {
         *out_resample_offset = resample_offset;
     }
 
-    return output_frames;
-}
-
-static Sint64 GetAudioStreamHead(SDL_AudioStream* stream, SDL_AudioSpec* out_spec, SDL_bool* out_flushed)
-{
-    void* iter = SDL_BeginAudioQueueIter(stream->queue);
-
-    if (!iter) {
-        SDL_zerop(out_spec);
-        *out_flushed = SDL_FALSE;
-        return 0;
-    }
-
-    Sint64 resample_offset = stream->resample_offset;
-    return NextAudioStreamIter(stream, &iter, &resample_offset, out_spec, out_flushed);
+    return total;
 }
 
 // You must hold stream->lock and validate your parameters before calling this!
@@ -852,7 +860,6 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
 
     const SDL_AudioFormat src_format = src_spec->format;
     const int src_channels = src_spec->channels;
-    const int src_frame_size = SDL_AUDIO_FRAMESIZE(*src_spec);
 
     const SDL_AudioFormat dst_format = dst_spec->format;
     const int dst_channels = dst_spec->channels;
@@ -868,34 +875,19 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
 
     // Not resampling? It's an easy conversion (and maybe not even that!)
     if (resample_rate == 0) {
-        Uint8* input_buffer = NULL;
+        Uint8* work_buffer = NULL;
 
-        // If no conversion is happening, read straight into the output buffer.
-        // Note, this is just to avoid extra copies.
-        // Some other formats may fit directly into the output buffer, but i'd rather process data in a SIMD-aligned buffer.
-        if ((src_format == dst_format) && (src_channels == dst_channels)) {
-            input_buffer = (Uint8 *)buf;
-        } else {
-            input_buffer = EnsureAudioStreamWorkBufferSize(stream, output_frames * max_frame_size);
+        // Ensure we have enough scratch space for any conversions
+        if ((src_format != dst_format) || (src_channels != dst_channels)) {
+            work_buffer = EnsureAudioStreamWorkBufferSize(stream, output_frames * max_frame_size);
 
-            if (!input_buffer) {
+            if (!work_buffer) {
                 return -1;
             }
         }
 
-        const int input_bytes = output_frames * src_frame_size;
-        if (SDL_ReadFromAudioQueue(stream->queue, input_buffer, input_bytes) != 0) {
-            SDL_assert(!"Not enough data in queue (read)");
-        }
-
-        stream->total_bytes_queued -= input_bytes;
-
-        // Even if we aren't currently resampling, we always need to update the history buffer
-        UpdateAudioStreamHistoryBuffer(stream, input_buffer, input_bytes, NULL, 0);
-
-        // Convert the data, if necessary
-        if (buf != input_buffer) {
-            ConvertAudio(output_frames, input_buffer, src_format, src_channels, buf, dst_format, dst_channels, input_buffer);
+        if (SDL_ReadFromAudioQueue(stream->queue, buf, dst_format, dst_channels, 0, output_frames, 0, work_buffer) != buf) {
+            return SDL_SetError("Not enough data in queue");
         }
 
         return 0;
@@ -907,9 +899,10 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
     // can require a different number of input_frames, depending on the resample_offset.
     // Infact, input_frames can sometimes even be zero when upsampling.
     const int input_frames = (int) SDL_GetResamplerInputFrames(output_frames, resample_rate, stream->resample_offset);
-    const int input_bytes = input_frames * src_frame_size;
 
-    const int resampler_padding_frames = SDL_GetResamplerPaddingFrames(resample_rate);
+    const int padding_frames = SDL_GetResamplerPaddingFrames(resample_rate);
+
+    const SDL_AudioFormat resample_format = SDL_AUDIO_F32;
 
     // If increasing channels, do it after resampling, since we'd just
     // do more work to resample duplicate channels. If we're decreasing, do
@@ -918,7 +911,7 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
     const int resample_channels = SDL_min(src_channels, dst_channels);
 
     // The size of the frame used when resampling
-    const int resample_frame_size = resample_channels * sizeof(float);
+    const int resample_frame_size = SDL_AUDIO_BYTESIZE(resample_format) * resample_channels;
 
     // The main portion of the work_buffer can be used to store 3 things:
     // src_sample_frame_size * (left_padding+input_buffer+right_padding)
@@ -929,14 +922,14 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
     //   resample_frame_size * output_frames
     //
     // Note, ConvertAudio requires (num_frames * max_sample_frame_size) of scratch space
-    const int work_buffer_frames = input_frames + (resampler_padding_frames * 2);
+    const int work_buffer_frames = input_frames + (padding_frames * 2);
     int work_buffer_capacity = work_buffer_frames * max_frame_size;
     int resample_buffer_offset = -1;
 
     // Check if we can resample directly into the output buffer.
     // Note, this is just to avoid extra copies.
     // Some other formats may fit directly into the output buffer, but i'd rather process data in a SIMD-aligned buffer.
-    if ((dst_format != SDL_AUDIO_F32) || (dst_channels != resample_channels)) {
+    if ((dst_format != resample_format) || (dst_channels != resample_channels)) {
         // Allocate space for converting the resampled output to the destination format
         int resample_convert_bytes = output_frames * max_frame_size;
         work_buffer_capacity = SDL_max(work_buffer_capacity, resample_convert_bytes);
@@ -958,45 +951,15 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
         return -1;
     }
 
-    const int padding_bytes = resampler_padding_frames * src_frame_size;
+    const Uint8* input_buffer = SDL_ReadFromAudioQueue(stream->queue,
+        NULL, resample_format, resample_channels,
+        padding_frames, input_frames, padding_frames, work_buffer);
 
-    Uint8* work_buffer_tail = work_buffer;
-
-    // Split the work_buffer into [left_padding][input_buffer][right_padding]
-    Uint8* left_padding = work_buffer_tail;
-    work_buffer_tail += padding_bytes;
-
-    Uint8* input_buffer = work_buffer_tail;
-    work_buffer_tail += input_bytes;
-
-    Uint8* right_padding = work_buffer_tail;
-    work_buffer_tail += padding_bytes;
-
-    SDL_assert((work_buffer_tail - work_buffer) <= work_buffer_capacity);
-
-    // Now read unconverted data from the queue into the work buffer to fulfill the request.
-    if (SDL_ReadFromAudioQueue(stream->queue, input_buffer, input_bytes) != 0) {
-        SDL_assert(!"Not enough data in queue (resample read)");
-    }
-    stream->total_bytes_queued -= input_bytes;
-
-    // Update the history buffer and fill in the left padding
-    UpdateAudioStreamHistoryBuffer(stream, input_buffer, input_bytes, left_padding, padding_bytes);
-
-    // Fill in the right padding by peeking into the input queue (missing data is filled with silence)
-    if (SDL_PeekIntoAudioQueue(stream->queue, right_padding, padding_bytes) != 0) {
-        SDL_assert(!"Not enough data in queue (resample peek)");
+    if (!input_buffer) {
+        return SDL_SetError("Not enough data in queue (resample)");
     }
 
-    SDL_assert(work_buffer_frames == input_frames + (resampler_padding_frames * 2));
-
-    // Resampling! get the work buffer to float32 format, etc, in-place.
-    ConvertAudio(work_buffer_frames, work_buffer, src_format, src_channels, work_buffer, SDL_AUDIO_F32, resample_channels, NULL);
-
-    // Update the work_buffer pointers based on the new frame size
-    input_buffer = work_buffer + ((input_buffer - work_buffer) / src_frame_size * resample_frame_size);
-    work_buffer_tail = work_buffer + ((work_buffer_tail - work_buffer) / src_frame_size * resample_frame_size);
-    SDL_assert((work_buffer_tail - work_buffer) <= work_buffer_capacity);
+    input_buffer += padding_frames * resample_frame_size;
 
     // Decide where the resampled output goes
     void* resample_buffer = (resample_buffer_offset != -1) ? (work_buffer + resample_buffer_offset) : buf;
@@ -1007,9 +970,7 @@ static int GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int ou
                   resample_rate, &stream->resample_offset);
 
     // Convert to the final format, if necessary
-    if (buf != resample_buffer) {
-        ConvertAudio(output_frames, resample_buffer, SDL_AUDIO_F32, resample_channels, buf, dst_format, dst_channels, work_buffer);
-    }
+    ConvertAudio(output_frames, resample_buffer, resample_format, resample_channels, buf, dst_format, dst_channels, work_buffer);
 
     return 0;
 }
@@ -1067,25 +1028,39 @@ int SDL_GetAudioStreamData(SDL_AudioStream *stream, void *voidbuf, int len)
     }
 
     // Process the data in chunks to avoid allocating too much memory (and potential integer overflows)
-    const int chunk_size = 4096;
+    const int chunk_size = 16384;
 
     int total = 0;
 
     while (total < len) {
         // Audio is processed a track at a time.
+        void* iter = SDL_BeginAudioQueueIter(stream->queue);
+
+        // The queue is completely empty
+        if (!iter) {
+            break;
+        }
+
+        Sint64 resample_offset = stream->resample_offset;
         SDL_AudioSpec input_spec;
         SDL_bool flushed;
-        const Sint64 available_frames = GetAudioStreamHead(stream, &input_spec, &flushed);
+        const Sint64 available_frames = NextAudioStreamIter(stream, &iter, &resample_offset, &input_spec, &flushed);
 
+        // Are there any frames available?
         if (available_frames == 0) {
+            SDL_PopAudioQueueHead(stream->queue);
+
             if (flushed) {
-                SDL_PopAudioQueueHead(stream->queue);
+                // Start fresh on the next track
                 SDL_zero(stream->input_spec);
                 stream->resample_offset = 0;
-                continue;
+            } else {
+                // When resampling, even if there are no output frames available, there may still be input frames.
+                // So "consume" these by updating the resample offset (and they will probably be read later from the history buffer)
+                stream->resample_offset = resample_offset;
             }
-            // There are no frames available, but the track hasn't been flushed, so more might be added later.
-            break;
+
+            continue;
         }
 
         if (UpdateAudioStreamInputSpec(stream, &input_spec) != 0) {
@@ -1141,6 +1116,21 @@ int SDL_GetAudioStreamAvailable(SDL_AudioStream *stream)
     return (int) SDL_min(count, SDL_INT_MAX);
 }
 
+static size_t GetAudioQueueQueued(SDL_AudioQueue *queue)
+{
+    size_t total = 0;
+
+    void *iter = SDL_BeginAudioQueueIter(queue);
+
+    while (iter) {
+        SDL_AudioSpec src_spec;
+        SDL_bool flushed;
+        total += SDL_NextAudioQueueIter(queue, &iter, &src_spec, &flushed);
+    }
+
+    return total;
+}
+
 // number of sample frames that are currently queued as input.
 int SDL_GetAudioStreamQueued(SDL_AudioStream *stream)
 {
@@ -1149,7 +1139,9 @@ int SDL_GetAudioStreamQueued(SDL_AudioStream *stream)
     }
 
     SDL_LockMutex(stream->lock);
-    const Uint64 total = stream->total_bytes_queued;
+
+    size_t total = GetAudioQueueQueued(stream->queue);
+
     SDL_UnlockMutex(stream->lock);
 
     // if this overflows an int, just clamp it to a maximum.
@@ -1167,7 +1159,6 @@ int SDL_ClearAudioStream(SDL_AudioStream *stream)
     SDL_ClearAudioQueue(stream->queue);
     SDL_zero(stream->input_spec);
     stream->resample_offset = 0;
-    stream->total_bytes_queued = 0;
 
     SDL_UnlockMutex(stream->lock);
     return 0;
@@ -1193,12 +1184,16 @@ void SDL_DestroyAudioStream(SDL_AudioStream *stream)
         SDL_UnbindAudioStream(stream);
     }
 
-    SDL_aligned_free(stream->history_buffer);
     SDL_aligned_free(stream->work_buffer);
     SDL_DestroyAudioQueue(stream->queue);
     SDL_DestroyMutex(stream->lock);
 
     SDL_free(stream);
+}
+
+static void SDLCALL DontFreeThisAudioBuffer(void *userdata, const void *buf, int len)
+{
+    // We don't own the buffer, but know it will outlive the stream
 }
 
 int SDL_ConvertAudioSamples(const SDL_AudioSpec *src_spec, const Uint8 *src_data, int src_len,
@@ -1228,7 +1223,7 @@ int SDL_ConvertAudioSamples(const SDL_AudioSpec *src_spec, const Uint8 *src_data
 
     SDL_AudioStream *stream = SDL_CreateAudioStream(src_spec, dst_spec);
     if (stream) {
-        if ((SDL_PutAudioStreamData(stream, src_data, src_len) == 0) && (SDL_FlushAudioStream(stream) == 0)) {
+        if ((SDL_PutAudioStreamBuffer(stream, src_data, src_len, NULL, DontFreeThisAudioBuffer) == 0) && (SDL_FlushAudioStream(stream) == 0)) {
             dstlen = SDL_GetAudioStreamAvailable(stream);
             if (dstlen >= 0) {
                 dst = (Uint8 *)SDL_malloc(dstlen);

@@ -766,13 +766,13 @@ extern DECLSPEC float SDLCALL SDL_GetAudioStreamFrequencyRatio(SDL_AudioStream *
 extern DECLSPEC int SDLCALL SDL_SetAudioStreamFrequencyRatio(SDL_AudioStream *stream, float ratio);
 
 /**
- * Add data to be converted/resampled to the stream.
+ * Add data to the stream.
  *
  * This data must match the format/channels/samplerate specified in the latest
  * call to SDL_SetAudioStreamFormat, or the format specified when creating the
  * stream if it hasn't been changed.
  *
- * Note that this call simply queues unconverted data for later. This is
+ * Note that this call simply copies the unconverted data for later. This is
  * different than SDL2, where data was converted during the Put call and the
  * Get call would just dequeue the previously-converted data.
  *
@@ -788,12 +788,69 @@ extern DECLSPEC int SDLCALL SDL_SetAudioStreamFrequencyRatio(SDL_AudioStream *st
  *
  * \since This function is available since SDL 3.0.0.
  *
+ * \sa SDL_PutAudioStreamBuffer
  * \sa SDL_ClearAudioStream
  * \sa SDL_FlushAudioStream
  * \sa SDL_GetAudioStreamData
  * \sa SDL_GetAudioStreamQueued
  */
 extern DECLSPEC int SDLCALL SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len);
+
+/**
+ * A callback that fires when a stream is finished using a buffer.
+ *
+ * Once called, the buffer is no longer owned by the stream, and so may be
+ * reused or destroyed.
+ *
+ * This callback can run at any time, and from any thread; if you need to
+ * serialize access to your app's data, you should provide and use a mutex or
+ * other synchronization device.
+ *
+ * This function is extremely time-sensitive; the callback should do the least
+ * amount of work possible and return as quickly as it can. The longer the
+ * callback runs, the higher the risk of audio dropouts or other problems.
+ *
+ * \param userdata An opaque pointer provided by the app for their personal use.
+ * \param buffer The pointer to the buffer.
+ * \param buflen The length of the buffer.
+ * \sa SDL_PutAudioStreamBuffer
+ */
+typedef void (SDLCALL *SDL_ReleaseAudioBufferCallback)(void *userdata, const void *buffer, int buflen);
+
+/**
+ * Add data to the stream, without copying it.
+ *
+ * This data must match the format/channels/samplerate specified in the latest
+ * call to SDL_SetAudioStreamFormat, or the format specified when creating the
+ * stream if it hasn't been changed.
+ *
+ * Unlike SDL_PutAudioStreamData, this does not copy the data passed in.
+ * Instead, it takes ownership of the buffer.
+ *
+ * On success, the buffer is owned by the stream, otherwise it is still owned
+ * by the caller.
+ *
+ * \param stream The stream the audio data is being added to
+ * \param buf A pointer to the audio data to add
+ * \param len The number of bytes to write to the stream
+ * \param userdata The userdata to be passed to the callback
+ * \param callback A callback to release the buffer after it is no longer needed
+ * \returns 0 on success or a negative error code on failure; call
+ *          SDL_GetError() for more information.
+ *
+ * \threadsafety It is safe to call this function from any thread, but if the
+ *               stream has a callback set, the caller might need to manage
+ *               extra locking.
+ *
+ * \since This function is available since SDL 3.0.0.
+ *
+ * \sa SDL_PutAudioStreamData
+ * \sa SDL_ClearAudioStream
+ * \sa SDL_FlushAudioStream
+ * \sa SDL_GetAudioStreamData
+ * \sa SDL_GetAudioStreamQueued
+ */
+extern DECLSPEC int SDLCALL SDL_PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, void* userdata, SDL_ReleaseAudioBufferCallback callback);
 
 /**
  * Get converted/resampled data from the stream.
