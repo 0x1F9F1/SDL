@@ -1016,6 +1016,7 @@ SDL3_0.0.0 {
     SDL_wcsnstr;
     SDL_wcsstr;
     SDL_wcstol;
+    SDL_PutAudioStreamBuffer;
     # extra symbols go here (don't modify this line)
   local: *;
 };
