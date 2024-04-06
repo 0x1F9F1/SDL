@@ -821,6 +821,77 @@ static double sine_wave_sample(const Sint64 idx, const Sint64 rate, const Sint64
   return SDL_sin(((double)(idx * freq % rate)) / ((double)rate) * (SDL_PI_D * 2) + phase);
 }
 
+static void free_audio_buffer(void* userdata, const void* buf, int len)
+{
+  SDL_free((void*) buf);
+}
+
+/* Add the data to the stream in separated tracks, to ensure correct resampling between track boundaries */
+static int put_audio_data_split(SDL_AudioStream* stream, const void* buf, int len)
+{
+  SDL_AudioSpec spec;
+  int frame_size;
+  int ret = SDL_GetAudioStreamFormat(stream, &spec, NULL);
+
+  if (ret != 0) {
+      return ret;
+  }
+
+  frame_size = SDL_AUDIO_FRAMESIZE(spec);
+
+  while (len > 0) {
+    int n = SDLTest_RandomIntegerInRange(1, SDL_min(len / frame_size, 100000)) * frame_size;
+    Uint8* p = SDL_malloc(n);
+
+    if (p == NULL) {
+        return -1;
+    }
+
+    SDL_memcpy(p, buf, n);
+    ret = SDL_PutAudioStreamBuffer(stream, p, n, NULL, free_audio_buffer);
+
+    if (ret != 0) {
+        SDL_free(p);
+        return ret;
+    }
+
+    buf = ((const Uint8*) buf) + n;
+    len -= n;
+  }
+
+  return 0;
+}
+
+/* Add the data to the stream in separated tracks, to ensure correct resampling between track boundaries */
+static int get_audio_data_split(SDL_AudioStream* stream, void* buf, int len) {
+  SDL_AudioSpec spec;
+  int frame_size;
+  int ret = SDL_GetAudioStreamFormat(stream, NULL, &spec);
+  int total = 0;
+
+  if (ret != 0) {
+      return ret;
+  }
+
+  frame_size = SDL_AUDIO_FRAMESIZE(spec);
+
+  while (len > 0) {
+    int n = SDLTest_RandomIntegerInRange(1, SDL_min(len / frame_size, 100000)) * frame_size;
+
+    ret = SDL_GetAudioStreamData(stream, buf, n);
+
+    if (ret != n) {
+        return total ? total : ret;
+    }
+
+    buf = ((Uint8*) buf) + n;
+    total += n;
+    len -= n;
+  }
+
+  return total;
+}
+
 /**
  * Check signal-to-noise ratio and maximum error of audio resampling.
  *
@@ -910,9 +981,9 @@ static int audio_resampleLoss(void *arg)
 
     tick_beg = SDL_GetPerformanceCounter();
 
-    ret = SDL_PutAudioStreamData(stream, buf_in, len_in);
-    SDLTest_AssertPass("Call to SDL_PutAudioStreamData(stream, buf_in, %i)", len_in);
-    SDLTest_AssertCheck(ret == 0, "Expected SDL_PutAudioStreamData to succeed.");
+    ret = put_audio_data_split(stream, buf_in, len_in);
+    SDLTest_AssertPass("Call to put_audio_data_split(stream, buf_in, %i)", len_in);
+    SDLTest_AssertCheck(ret == 0, "Expected put_audio_data_split to succeed.");
     SDL_free(buf_in);
     if (ret != 0) {
       SDL_DestroyAudioStream(stream);
@@ -934,8 +1005,8 @@ static int audio_resampleLoss(void *arg)
       return TEST_ABORTED;
     }
 
-    len_out = SDL_GetAudioStreamData(stream, buf_out, len_target);
-    SDLTest_AssertPass("Call to SDL_GetAudioStreamData(stream, buf_out, %i)", len_target);
+    len_out = get_audio_data_split(stream, buf_out, len_target);
+    SDLTest_AssertPass("Call to get_audio_data_split(stream, buf_out, %i)", len_target);
     SDLTest_AssertCheck(len_out == len_target, "Expected output length to be no larger than %i, got %i.",
                         len_target, len_out);
     SDL_DestroyAudioStream(stream);
