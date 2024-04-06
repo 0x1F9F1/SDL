@@ -974,42 +974,55 @@ int SDL_GetAudioStreamData(SDL_AudioStream *stream, void *voidbuf, int len)
         Sint64 resample_offset = stream->resample_offset;
         SDL_AudioSpec input_spec;
         SDL_bool flushed;
-        const Sint64 available_frames = NextAudioStreamIter(stream, &iter, &resample_offset, &input_spec, &flushed);
 
-        // Are there any frames available?
-        if (available_frames == 0) {
-            SDL_PopAudioQueueHead(stream->queue);
-
-            if (flushed) {
-                // Start fresh on the next track
-                SDL_zero(stream->input_spec);
-                stream->resample_offset = 0;
-            } else {
-                // When resampling, even if there are no output frames available, there may still be input frames.
-                // So "consume" these by updating the resample offset (and they will probably be read later from the history buffer)
-                stream->resample_offset = resample_offset;
-            }
-
-            continue;
-        }
+        // Check how much data is available from this track.
+        // We rely on this to know when to avoid reading past the end of the track, so it must be exact.
+        Sint64 avail_frames = NextAudioStreamIter(stream, &iter, &resample_offset, &input_spec, &flushed);
 
         if (UpdateAudioStreamInputSpec(stream, &input_spec) != 0) {
             total = total ? total : -1;
             break;
         }
 
-        // Clamp the output length to the maximum currently available.
-        // GetAudioStreamDataInternal requires enough input data is available.
-        int output_frames = (len - total) / dst_frame_size;
-        output_frames = SDL_min(output_frames, chunk_size);
-        output_frames = (int) SDL_min(output_frames, available_frames);
+        for (;;) {
+            int output_frames = (len - total) / dst_frame_size;
 
-        if (GetAudioStreamDataInternal(stream, &buf[total], output_frames) != 0) {
-            total = total ? total : -1;
+            output_frames = SDL_min(output_frames, chunk_size);
+
+            // Clamp the output length to the maximum currently available.
+            // GetAudioStreamDataInternal requires enough input data is available.
+            output_frames = (int) SDL_min(output_frames, avail_frames);
+
+            if (output_frames == 0) {
+                break;
+            }
+
+            if (GetAudioStreamDataInternal(stream, &buf[total], output_frames) != 0) {
+                total = total ? total : -1;
+                break;
+            }
+
+            avail_frames -= output_frames;
+            total += output_frames * dst_frame_size;
+        }
+
+        if (avail_frames > 0) {
+            // There is still data available, so either we don't need more, or something went wrong.
             break;
         }
 
-        total += output_frames * dst_frame_size;
+        // Even if we don't need more data, try and eagerly pop the track if it's empty.
+        SDL_PopAudioQueueHead(stream->queue);
+
+        if (flushed) {
+            // Start fresh on the next track
+            SDL_zero(stream->input_spec);
+            stream->resample_offset = 0;
+        } else {
+            // When resampling, even if there are no output frames available, there may still be input frames.
+            // So "consume" these by updating the resample offset (and they will probably be read later from the history buffer)
+            stream->resample_offset = resample_offset;
+        }
     }
 
     SDL_UnlockMutex(stream->lock);
@@ -1070,7 +1083,7 @@ int SDL_GetAudioStreamQueued(SDL_AudioStream *stream)
 
     SDL_LockMutex(stream->lock);
 
-    size_t total = GetAudioQueueQueued(stream->queue);
+    Sint64 total = GetAudioQueueQueued(stream->queue);
 
     SDL_UnlockMutex(stream->lock);
 
