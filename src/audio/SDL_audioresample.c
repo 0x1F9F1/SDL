@@ -26,18 +26,19 @@
 // SDL's resampler uses a "bandlimited interpolation" algorithm:
 //     https://ccrma.stanford.edu/~jos/resample/
 
-#include "SDL_audio_resampler_filter.h"
+// TODO: Support changing this at runtime
+#define RESAMPLER_ZERO_CROSSINGS 5
 
 // For a given srcpos, `srcpos + frame` are sampled, where `-RESAMPLER_ZERO_CROSSINGS < frame <= RESAMPLER_ZERO_CROSSINGS`.
 // Note, when upsampling, it is also possible to start sampling from `srcpos = -1`.
 #define RESAMPLER_MAX_PADDING_FRAMES (RESAMPLER_ZERO_CROSSINGS + 1)
-
-#define RESAMPLER_FILTER_INTERP_BITS  (32 - RESAMPLER_BITS_PER_ZERO_CROSSING)
-#define RESAMPLER_FILTER_INTERP_RANGE (1 << RESAMPLER_FILTER_INTERP_BITS)
-
 #define RESAMPLER_SAMPLES_PER_FRAME (RESAMPLER_ZERO_CROSSINGS * 2)
 
-#define RESAMPLER_FULL_FILTER_SIZE (RESAMPLER_SAMPLES_PER_FRAME * (RESAMPLER_SAMPLES_PER_ZERO_CROSSING + 1))
+#define RESAMPLER_BITS_PER_SAMPLE 16
+#define RESAMPLER_BITS_PER_ZERO_CROSSING  ((RESAMPLER_BITS_PER_SAMPLE / 2) + 1)
+#define RESAMPLER_SAMPLES_PER_ZERO_CROSSING  (1 << RESAMPLER_BITS_PER_ZERO_CROSSING)
+#define RESAMPLER_FILTER_INTERP_BITS  (32 - RESAMPLER_BITS_PER_ZERO_CROSSING)
+#define RESAMPLER_FILTER_INTERP_RANGE (1 << RESAMPLER_FILTER_INTERP_BITS)
 
 static void ResampleFrame_Generic(const float *src, float *dst, const float *filter, float interp, int chans)
 {
@@ -97,7 +98,6 @@ static void ResampleFrame_Stereo(const float *src, float *dst, const float *filt
 #ifdef SDL_SSE_INTRINSICS
 static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, float *dst, const float *filter, float interp, int chans)
 {
-    // TODO: Increase RESAMPLER_SAMPLES_PER_FRAME to 12 when using SSE?
 #if RESAMPLER_SAMPLES_PER_FRAME != 10
 #error Invalid samples per frame
 #endif
@@ -220,7 +220,115 @@ typedef void (*ResampleFrameFunc)(const float *src, float *dst, const float *fil
 
 static ResampleFrameFunc ResampleFrame[8];
 
-static float FullResamplerFilter[RESAMPLER_FULL_FILTER_SIZE];
+#define RESAMPLER_FILTER_SIZE (RESAMPLER_SAMPLES_PER_FRAME * (RESAMPLER_SAMPLES_PER_ZERO_CROSSING + 1))
+
+static float ResamplerFilter[RESAMPLER_FILTER_SIZE];
+
+// This is a "modified" bessel function, so you can't use POSIX j0() */
+// See https://mathworld.wolfram.com/ModifiedBesselFunctionoftheFirstKind.html 
+static float bessel(float x)
+{
+    const float epsilon = 1e-12f;
+
+    float sum = 0.0f;
+    float i = 1.0f;
+    float t = 1.0f;
+    x *= x * 0.25f;
+
+    while (t > epsilon) {
+        sum += t;
+        t *= x / (i * i);
+        ++i;
+    }
+
+    return sum;
+}
+
+static void CubicCoef(float *interp, float frac)
+{
+    float frac2 = frac * frac;
+    float frac3 = frac * frac2;
+
+    interp[3] = -0.1666666667f * frac + 0.1666666667f * frac3;
+    interp[2] = frac + 0.5f * frac2 - 0.5f * frac3;
+    interp[0] = -0.3333333333f * frac + 0.5f * frac2 - 0.1666666667f * frac3;
+    interp[1] = 1.0f - interp[3] - interp[2] - interp[0];
+}
+
+static float CubicInterp(float* interp, float* data)
+{
+    return data[0] * interp[0] + data[1] * interp[1] + data[2] * interp[2] + data[3] * interp[3];
+}
+
+static void GenerateKaiserTable(float beta, float* table, int tablelen)
+{
+    const float bessel_beta = bessel(beta);
+
+    int i;
+
+    for (i = 0; i <= tablelen; ++i) {
+        table[i + 1] = bessel(beta * SDL_sqrtf(1.0f - (i * i / (float)(tablelen * tablelen)))) / bessel_beta;
+    }
+
+    table[0] = table[2];
+    table[tablelen + 2] = 0.0f;
+    table[tablelen + 3] = 0.0f;
+}
+
+// If KAISER_TABLE_SIZE is a multiple of RESAMPLER_ZERO_CROSSINGS,
+// we can avoid recomputing the interp factors between each zero crossing
+#define KAISER_TABLE_SIZE (RESAMPLER_ZERO_CROSSINGS * 4)
+
+static void GenerateResamplerFilter()
+{
+    // Build a table combining the left and right wings, for faster access
+
+    // if dB > 50, beta=(0.1102 * (dB - 8.7)), according to Matlab.
+    const float dB = 80.0f;
+    const float beta = 0.1102f * (dB - 8.7f);
+
+    const int winglen = RESAMPLER_SAMPLES_PER_ZERO_CROSSING * RESAMPLER_ZERO_CROSSINGS;
+    const float sinc_scale = SDL_PI_F / RESAMPLER_SAMPLES_PER_ZERO_CROSSING;
+
+    // Generate a small kaiser table, which will we then use interpolate over.
+    float kaiser[KAISER_TABLE_SIZE + 4];
+    GenerateKaiserTable(beta, kaiser, KAISER_TABLE_SIZE);
+
+    int i, j;
+
+    for (i = 0; i < RESAMPLER_SAMPLES_PER_ZERO_CROSSING; ++i) {
+        float s = SDL_sinf(i * sinc_scale) / sinc_scale;
+
+        // The fractional part of the interpolation will say the same.
+        float interp[4];
+        CubicCoef(interp, (float)((i * KAISER_TABLE_SIZE) % winglen) / winglen);
+
+        for (j = 0; j < RESAMPLER_ZERO_CROSSINGS; j++) {
+            int n = j * RESAMPLER_SAMPLES_PER_ZERO_CROSSING + i;
+            float v = 1.0f;
+
+            if (n) {
+                v = CubicInterp(interp, &kaiser[(n * KAISER_TABLE_SIZE) / winglen]) * s / n;
+            }
+
+            int lwing = (i * RESAMPLER_SAMPLES_PER_FRAME) + (RESAMPLER_ZERO_CROSSINGS - 1) - j;
+            int rwing = (RESAMPLER_FILTER_SIZE - 1) - lwing;
+
+            ResamplerFilter[lwing] = v;
+            ResamplerFilter[rwing] = v;
+
+            s = -s;
+        }
+    }
+
+    for (i = 0; i < RESAMPLER_ZERO_CROSSINGS; ++i) {
+        int rwing = i + RESAMPLER_ZERO_CROSSINGS;
+        int lwing = (RESAMPLER_FILTER_SIZE - 1) - rwing;
+
+        ResamplerFilter[lwing] = 0.0f;
+        ResamplerFilter[rwing] = 0.0f;
+    }
+}
 
 void SDL_SetupAudioResampler(void)
 {
@@ -229,27 +337,9 @@ void SDL_SetupAudioResampler(void)
         return;
     }
 
-    // Build a table combining the left and right wings, for faster access
-    int i, j;
+    GenerateResamplerFilter();
 
-    for (i = 0; i < RESAMPLER_SAMPLES_PER_ZERO_CROSSING; ++i) {
-        for (j = 0; j < RESAMPLER_ZERO_CROSSINGS; j++) {
-            int lwing = (i * RESAMPLER_SAMPLES_PER_FRAME) + (RESAMPLER_ZERO_CROSSINGS - 1) - j;
-            int rwing = (RESAMPLER_FULL_FILTER_SIZE - 1) - lwing;
-
-            float value = ResamplerFilter[(i * RESAMPLER_ZERO_CROSSINGS) + j];
-            FullResamplerFilter[lwing] = value;
-            FullResamplerFilter[rwing] = value;
-        }
-    }
-
-    for (i = 0; i < RESAMPLER_ZERO_CROSSINGS; ++i) {
-        int rwing = i + RESAMPLER_ZERO_CROSSINGS;
-        int lwing = (RESAMPLER_FULL_FILTER_SIZE - 1) - rwing;
-
-        FullResamplerFilter[lwing] = 0.0f;
-        FullResamplerFilter[rwing] = 0.0f;
-    }
+    int i;
 
     for (i = 0; i < 8; ++i) {
         ResampleFrame[i] = ResampleFrame_Generic;
@@ -369,7 +459,7 @@ void SDL_ResampleAudio(int chans, const float *src, int inframes, float *dst, in
 
         SDL_assert(srcindex >= -1 && srcindex < inframes);
 
-        const float *filter = &FullResamplerFilter[(srcfraction >> RESAMPLER_FILTER_INTERP_BITS) * RESAMPLER_SAMPLES_PER_FRAME];
+        const float *filter = &ResamplerFilter[(srcfraction >> RESAMPLER_FILTER_INTERP_BITS) * RESAMPLER_SAMPLES_PER_FRAME];
         const float interp = (float)(srcfraction & (RESAMPLER_FILTER_INTERP_RANGE - 1)) * (1.0f / RESAMPLER_FILTER_INTERP_RANGE);
 
         const float *frame = &src[srcindex * chans];
