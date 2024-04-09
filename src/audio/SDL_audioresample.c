@@ -21,6 +21,7 @@
 #include "SDL_internal.h"
 
 #include "SDL_sysaudio.h"
+
 #include "SDL_audioresample.h"
 
 // SDL's resampler uses a "bandlimited interpolation" algorithm:
@@ -36,10 +37,10 @@
 #endif
 
 // TODO: Is this too low?
-#define RESAMPLER_BITS_PER_ZERO_CROSSING 3
-#define RESAMPLER_SAMPLES_PER_ZERO_CROSSING  (1 << RESAMPLER_BITS_PER_ZERO_CROSSING)
-#define RESAMPLER_FILTER_INTERP_BITS  (32 - RESAMPLER_BITS_PER_ZERO_CROSSING)
-#define RESAMPLER_FILTER_INTERP_RANGE (1 << RESAMPLER_FILTER_INTERP_BITS)
+#define RESAMPLER_BITS_PER_ZERO_CROSSING    3
+#define RESAMPLER_SAMPLES_PER_ZERO_CROSSING (1 << RESAMPLER_BITS_PER_ZERO_CROSSING)
+#define RESAMPLER_FILTER_INTERP_BITS        (32 - RESAMPLER_BITS_PER_ZERO_CROSSING)
+#define RESAMPLER_FILTER_INTERP_RANGE       (1 << RESAMPLER_FILTER_INTERP_BITS)
 
 #define RESAMPLER_TABLE_SIZE (RESAMPLER_ZERO_CROSSINGS * RESAMPLER_SAMPLES_PER_ZERO_CROSSING)
 
@@ -49,7 +50,10 @@
 // Note, when upsampling, it is also possible to start sampling from `srcpos = -1`.
 #define RESAMPLER_MAX_PADDING_FRAMES (RESAMPLER_ZERO_CROSSINGS + 1)
 
-static void ResampleFrame_Generic(const float *src, float *dst, const float* filter, float frac, int chans)
+// ResampleFrame is just a vector/matrix/matrix multiplication
+// [1, frac, frac^2, frac^3] * filter * src
+
+static void ResampleFrame_Generic(const float *src, float *dst, const float *filter, float frac, int chans)
 {
     const float frac2 = frac * frac;
     const float frac3 = frac * frac2;
@@ -61,10 +65,10 @@ static void ResampleFrame_Generic(const float *src, float *dst, const float* fil
         scales[i] = filter[0] + (frac * filter[1]) + (frac2 * filter[2]) + (frac3 * filter[3]);
     }
 
-    for (chan = 0; chan < chans; chan++) {
+    for (chan = 0; chan < chans; ++chan) {
         float out = 0.0f;
 
-        for (i = 0; i < RESAMPLER_SAMPLES_PER_FRAME; i++) {
+        for (i = 0; i < RESAMPLER_SAMPLES_PER_FRAME; ++i) {
             out += src[i * chans + chan] * scales[i];
         }
 
@@ -114,38 +118,42 @@ static void ResampleFrame_Stereo(const float *src, float *dst, const float *filt
 #ifdef SDL_SSE_INTRINSICS
 #define sdl_madd_ps(a, b, c) _mm_add_ps(a, _mm_mul_ps(b, c)) // Not-so-fused multiply-add
 
-static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, float *dst, const float* filter, float frac, int chans)
+static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, float *dst, const float *filter, float frac, int chans)
 {
 #if RESAMPLER_SAMPLES_PER_FRAME != 12
 #error Invalid samples per frame
 #endif
 
-    const __m128 frac1 = _mm_set1_ps(frac);
-    const __m128 frac2 = _mm_mul_ps(frac1, frac1);
-    const __m128 frac3 = _mm_mul_ps(frac1, frac2);
-
-#define X(out, in) { \
-    __m128 c0 = _mm_loadu_ps((in) + 0); \
-    __m128 c1 = _mm_loadu_ps((in) + 4); \
-    __m128 c2 = _mm_loadu_ps((in) + 8); \
-    __m128 c3 = _mm_loadu_ps((in) + 12); \
-    /* _MM_TRANSPOSE4_PS(c0, c1, c2, c3); Transposed in SetupAudioResampler */ \
-    out = sdl_madd_ps(sdl_madd_ps(sdl_madd_ps(c0, c1, frac1), c2, frac2), c3, frac3); \
-}
-
     __m128 f0, f1, f2;
-    X(f0, &filter[0]);
-    X(f1, &filter[16]);
-    X(f2, &filter[32]);
+
+    {
+        const __m128 frac1 = _mm_set1_ps(frac);
+        const __m128 frac2 = _mm_mul_ps(frac1, frac1);
+        const __m128 frac3 = _mm_mul_ps(frac1, frac2);
+        __m128 c0, c1, c2, c3;
+
+#define X(out)                                                                 \
+    c0 = _mm_loadu_ps(&filter[0]);                                             \
+    c1 = _mm_loadu_ps(&filter[4]);                                             \
+    c2 = _mm_loadu_ps(&filter[8]);                                             \
+    c3 = _mm_loadu_ps(&filter[12]);                                            \
+    filter += 16;                                                              \
+    /* _MM_TRANSPOSE4_PS(c0, c1, c2, c3); Transposed in SetupAudioResampler */ \
+    out = sdl_madd_ps(sdl_madd_ps(sdl_madd_ps(c0, c1, frac1), c2, frac2), c3, frac3);
+
+        X(f0);
+        X(f1);
+        X(f2);
 
 #undef X
+    }
 
     if (chans == 2) {
         // Duplicate each of the filter elements and multiply by the input
         // Use two accumulators to improve throughput
         __m128 out0 = _mm_mul_ps(_mm_loadu_ps(src + 0), _mm_unpacklo_ps(f0, f0));
         __m128 out1 = _mm_mul_ps(_mm_loadu_ps(src + 4), _mm_unpackhi_ps(f0, f0));
-        out0 = sdl_madd_ps(out0, _mm_loadu_ps(src + 8),  _mm_unpacklo_ps(f1, f1));
+        out0 = sdl_madd_ps(out0, _mm_loadu_ps(src + 8), _mm_unpacklo_ps(f1, f1));
         out1 = sdl_madd_ps(out1, _mm_loadu_ps(src + 12), _mm_unpackhi_ps(f1, f1));
         out0 = sdl_madd_ps(out0, _mm_loadu_ps(src + 16), _mm_unpacklo_ps(f2, f2));
         out1 = sdl_madd_ps(out1, _mm_loadu_ps(src + 20), _mm_unpackhi_ps(f2, f2));
@@ -169,7 +177,7 @@ static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, flo
 
         // Horizontal sum
         __m128 shuf = _mm_shuffle_ps(out, out, _MM_SHUFFLE(2, 3, 0, 1));
-        out = _mm_add_ps(out, shuf);                  
+        out = _mm_add_ps(out, shuf);
         out = _mm_add_ss(out, _mm_movehl_ps(shuf, out));
 
         _mm_store_ss(dst, out);
@@ -180,14 +188,23 @@ static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, flo
 
     // Process 4 channels at once
     for (; chan + 4 <= chans; chan += 4) {
-        const float* in = &src[chan];
+        const float *in = &src[chan];
         __m128 out0 = _mm_setzero_ps();
         __m128 out1 = _mm_setzero_ps();
 
-#define X(a, b, c, out) out = sdl_madd_ps(out, _mm_loadu_ps(&in[(a) * chans]), _mm_shuffle_ps(b, b, _MM_SHUFFLE(c, c, c, c)))
-#define Y(a, b) X(a + 0, b, 0, out0); X(a + 1, b, 1, out1); X(a + 2, b, 2, out0); X(a + 3, b, 3, out1)
+#define X(a, b, out)                                                                         \
+    out = sdl_madd_ps(out, _mm_loadu_ps(in), _mm_shuffle_ps(a, a, _MM_SHUFFLE(b, b, b, b))); \
+    in += chans
 
-        Y(0, f0); Y(4, f1); Y(8, f2);
+#define Y(a)       \
+    X(a, 0, out0); \
+    X(a, 1, out1); \
+    X(a, 2, out0); \
+    X(a, 3, out1)
+
+        Y(f0);
+        Y(f1);
+        Y(f2);
 
 #undef X
 #undef Y
@@ -201,13 +218,13 @@ static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, flo
     // Process the remaining channels one at a time.
     // Channel counts 1,2,4,8 are already handled above, leaving 3,5,6,7 to deal with (looping 3,1,2,3 times).
     // Without vgatherdps (AVX2), this gets quite messy.
-    for (; chan < chans; chan++) {
-        const float* in = &src[chan];
+    for (; chan < chans; ++chan) {
+        const float *in = &src[chan];
         __m128 v0, v1, v2, temp;
 
-#define X(x) \
-    temp = _mm_unpacklo_ps(_mm_load_ss(in), _mm_load_ss(in + chans)); \
-    in += chans + chans; \
+#define X(x)                                                                            \
+    temp = _mm_unpacklo_ps(_mm_load_ss(in), _mm_load_ss(in + chans));                   \
+    in += chans + chans;                                                                \
     x = _mm_movelh_ps(temp, _mm_unpacklo_ps(_mm_load_ss(in), _mm_load_ss(in + chans))); \
     in += chans + chans
 
@@ -223,42 +240,46 @@ static void SDL_TARGETING("sse") ResampleFrame_Generic_SSE(const float *src, flo
 
         // Horizontal sum
         __m128 shuf = _mm_shuffle_ps(out, out, _MM_SHUFFLE(2, 3, 0, 1));
-        out = _mm_add_ps(out, shuf);                  
+        out = _mm_add_ps(out, shuf);
         out = _mm_add_ss(out, _mm_movehl_ps(shuf, out));
 
         _mm_store_ss(&dst[chan], out);
     }
 }
 
-#undef sdl_fmadd_ps
+#undef sdl_madd_ps
 #endif
 
 #ifdef SDL_NEON_INTRINSICS
-static void ResampleFrame_Generic_NEON(const float *src, float *dst, const float* filter, float frac, int chans)
+static void ResampleFrame_Generic_NEON(const float *src, float *dst, const float *filter, float frac, int chans)
 {
 #if RESAMPLER_SAMPLES_PER_FRAME != 12
 #error Invalid samples per frame
 #endif
 
-    const float32x4_t frac1 = vdupq_n_f32(frac);
-    const float32x4_t frac2 = vmulq_f32(frac1, frac1);
-    const float32x4_t frac3 = vmulq_f32(frac1, frac2);
-
-#define X(out, in) { \
-    float32x4_t c0 = vld1q_f32((in) + 0); \
-    float32x4_t c1 = vld1q_f32((in) + 4); \
-    float32x4_t c2 = vld1q_f32((in) + 8); \
-    float32x4_t c3 = vld1q_f32((in) + 12); \
-    /* Transposed in SetupAudioResampler */ \
-    out = vmlaq_f32(vmlaq_f32(vmlaq_f32(c0, c1, frac1), c2, frac2), c3, frac3); \
-}
-
     float32x4_t f0, f1, f2;
-    X(f0, &filter[0]);
-    X(f1, &filter[16]);
-    X(f2, &filter[32]);
+
+    {
+        const float32x4_t frac1 = vdupq_n_f32(frac);
+        const float32x4_t frac2 = vmulq_f32(frac1, frac1);
+        const float32x4_t frac3 = vmulq_f32(frac1, frac2);
+        float32x4_t c0, c1, c2, c3;
+
+#define X(out)                              \
+    c0 = vld1q_f32(&filter[0]);             \
+    c1 = vld1q_f32(&filter[4]);             \
+    c2 = vld1q_f32(&filter[8]);             \
+    c3 = vld1q_f32(&filter[12]);            \
+    filter += 16;                           \
+    /* Transposed in SetupAudioResampler */ \
+    out = vmlaq_f32(vmlaq_f32(vmlaq_f32(c0, c1, frac1), c2, frac2), c3, frac3)
+
+        X(f0);
+        X(f1);
+        X(f2);
 
 #undef X
+    }
 
     if (chans == 2) {
         float32x4x2_t g0 = vzipq_f32(f0, f0);
@@ -269,7 +290,7 @@ static void ResampleFrame_Generic_NEON(const float *src, float *dst, const float
         // Use two accumulators to improve throughput
         float32x4_t out0 = vmulq_f32(vld1q_f32(src + 0), g0.val[0]);
         float32x4_t out1 = vmulq_f32(vld1q_f32(src + 4), g0.val[1]);
-        out0 = vmlaq_f32(out0, vld1q_f32(src + 8),  g1.val[0]);
+        out0 = vmlaq_f32(out0, vld1q_f32(src + 8), g1.val[0]);
         out1 = vmlaq_f32(out1, vld1q_f32(src + 12), g1.val[1]);
         out0 = vmlaq_f32(out0, vld1q_f32(src + 16), g2.val[0]);
         out1 = vmlaq_f32(out1, vld1q_f32(src + 20), g2.val[1]);
@@ -303,14 +324,23 @@ static void ResampleFrame_Generic_NEON(const float *src, float *dst, const float
 
     // Process 4 channels at once
     for (; chan + 4 <= chans; chan += 4) {
-        const float* in = &src[chan];
+        const float *in = &src[chan];
         float32x4_t out0 = vdupq_n_f32(0);
         float32x4_t out1 = vdupq_n_f32(0);
 
-#define X(a, b, c, out) out = vmlaq_f32(out, vld1q_f32(&in[(a) * chans]), vdupq_lane_f32(b, c))
-#define Y(a, b) X(a + 0, vget_low_f32(b), 0, out0); X(a + 1, vget_low_f32(b), 1, out1); X(a + 2, vget_high_f32(b), 0, out0); X(a + 3, vget_high_f32(b), 1, out1)
+#define X(a, b, out)                                           \
+    out = vmlaq_f32(out, vld1q_f32(in), vdupq_lane_f32(a, b)); \
+    in += chans
 
-        Y(0, f0); Y(4, f1); Y(8, f2);
+#define Y(a)                      \
+    X(vget_low_f32(a), 0, out0);  \
+    X(vget_low_f32(a), 1, out1);  \
+    X(vget_high_f32(a), 0, out0); \
+    X(vget_high_f32(a), 1, out1)
+
+        Y(f0);
+        Y(f1);
+        Y(f2);
 
 #undef X
 #undef Y
@@ -323,17 +353,17 @@ static void ResampleFrame_Generic_NEON(const float *src, float *dst, const float
 
     // Process the remaining channels one at a time.
     // Channel counts 1,2,4,8 are already handled above, leaving 3,5,6,7 to deal with (looping 3,1,2,3 times).
-    for (; chan < chans; chan++) {
-        const float* in = &src[chan];
+    for (; chan < chans; ++chan) {
+        const float *in = &src[chan];
         float32x4_t v0, v1, v2;
 
-#define X(x) \
-    x = vld1q_dup_f32(in); \
-    in += chans; \
+#define X(x)                      \
+    x = vld1q_dup_f32(in);        \
+    in += chans;                  \
     x = vld1q_lane_f32(in, x, 1); \
-    in += chans; \
+    in += chans;                  \
     x = vld1q_lane_f32(in, x, 2); \
-    in += chans; \
+    in += chans;                  \
     x = vld1q_lane_f32(in, x, 3); \
     in += chans
 
@@ -358,12 +388,12 @@ static void ResampleFrame_Generic_NEON(const float *src, float *dst, const float
 
 // p(t) = (2*p0 + m0 - 2*p1 + m1)*t3 + (-3*p0 + 3*p1 - 2*m0 - m1)*t2 + m0*t + p0
 // https://en.wikipedia.org/wiki/Cubic_Hermite_spline
-static void CubicHermiteSpline(float* coeffs, float p0, float p1, float m0, float m1)
+static void CubicHermiteSpline(float *coeffs, float p0, float p1, float m0, float m1)
 {
     float dp = p0 - p1;
     float c3 = dp + dp + m0 + m1;
     float c2 = -c3 - dp - m0;
-    
+
     coeffs[0] = p0;
     coeffs[1] = m0;
     coeffs[2] = c2;
@@ -371,7 +401,7 @@ static void CubicHermiteSpline(float* coeffs, float p0, float p1, float m0, floa
 }
 
 // Zeroth-order modified Bessel function of the first kind
-// https://mathworld.wolfram.com/ModifiedBesselFunctionoftheFirstKind.html 
+// https://mathworld.wolfram.com/ModifiedBesselFunctionoftheFirstKind.html
 static float BesselI0(float x)
 {
     float sum = 0.0f;
@@ -379,7 +409,7 @@ static float BesselI0(float x)
     float t = 1.0f;
     x *= x * 0.25f;
 
-    while (t > sum * SDL_FLT_EPSILON) {
+    while (t >= sum * SDL_FLT_EPSILON) {
         sum += t;
         t *= x / (i * i);
         ++i;
@@ -426,7 +456,7 @@ static void GenerateResamplerFilter()
     ks[1] = 1.0f;
     ks[RESAMPLER_TABLE_SIZE + 2] = 0.0f;
     ks[RESAMPLER_TABLE_SIZE + 3] = 0.0f;
-    
+
     // Generate the splines for each point
     // When interpolating, the fraction represents how far we are between input samples,
     // so we need to align the filter by "moving" it to the right.
@@ -439,16 +469,16 @@ static void GenerateResamplerFilter()
     // interp(p[n], p[n+1], t) = interp(p[n+1], p[n+1-1], 1 - t) = interp(p[n+1], p[n], 1 - t)
     for (i = 0; i < RESAMPLER_SAMPLES_PER_ZERO_CROSSING; ++i) {
         for (j = 0; j < RESAMPLER_ZERO_CROSSINGS; ++j) {
-            const float* points = &ks[(j * RESAMPLER_SAMPLES_PER_ZERO_CROSSING) + i];
-            float* fwd = ResamplerFilter[i][RESAMPLER_ZERO_CROSSINGS - j - 1];
-            float* rev = ResamplerFilter[RESAMPLER_SAMPLES_PER_ZERO_CROSSING - i - 1][RESAMPLER_ZERO_CROSSINGS + j];
+            const float *points = &ks[(j * RESAMPLER_SAMPLES_PER_ZERO_CROSSING) + i];
+            float *fwd = ResamplerFilter[i][RESAMPLER_ZERO_CROSSINGS - j - 1];
+            float *rev = ResamplerFilter[RESAMPLER_SAMPLES_PER_ZERO_CROSSING - i - 1][RESAMPLER_ZERO_CROSSINGS + j];
 
             // Calculate the spline going in both directions
             float p0 = points[1];
             float p1 = points[2];
             float m0 = (p1 - points[0]) * 0.5f;
             float m1 = (points[3] - p0) * 0.5f;
-            CubicHermiteSpline(fwd, p0, p1,  m0,  m1);
+            CubicHermiteSpline(fwd, p0, p1, m0, m1);
             CubicHermiteSpline(rev, p1, p0, -m1, -m0);
         }
     }
@@ -458,7 +488,7 @@ typedef void (*ResampleFrameFunc)(const float *src, float *dst, const float *fil
 static ResampleFrameFunc ResampleFrame[8];
 
 // Transpose 4x4 floats
-static void Transpose4x4(float* data)
+static void Transpose4x4(float *data)
 {
     int i, j;
     float temp[16];
@@ -469,7 +499,7 @@ static void Transpose4x4(float* data)
 
     for (i = 0; i < 4; ++i) {
         for (j = 0; j < 4; ++j) {
-            data[i*4+j] = temp[j*4+i];
+            data[i * 4 + j] = temp[j * 4 + i];
         }
     }
 }
@@ -624,14 +654,14 @@ void SDL_ResampleAudio(int chans, const float *src, int inframes, float *dst, in
 
     src -= (RESAMPLER_ZERO_CROSSINGS - 1) * chans;
 
-    for (i = 0; i < outframes; i++) {
+    for (i = 0; i < outframes; ++i) {
         int srcindex = (int)(Sint32)(srcpos >> 32);
         Uint32 srcfraction = (Uint32)(srcpos & 0xFFFFFFFF);
         srcpos += resample_rate;
 
         SDL_assert(srcindex >= -1 && srcindex < inframes);
 
-        const float* filter = ResamplerFilter[srcfraction >> RESAMPLER_FILTER_INTERP_BITS][0];
+        const float *filter = ResamplerFilter[srcfraction >> RESAMPLER_FILTER_INTERP_BITS][0];
         const float frac = (float)(srcfraction & (RESAMPLER_FILTER_INTERP_RANGE - 1)) * (1.0f / RESAMPLER_FILTER_INTERP_RANGE);
 
         const float *frame = &src[srcindex * chans];

@@ -981,7 +981,7 @@ static int audio_resampleLoss(void *arg)
 
   int spec_idx = 0;
   int min_channels = 1;
-  int max_channels = 1 /*8*/;
+  int max_channels = 8 /*8*/;
   int num_channels = min_channels;
 
   for (spec_idx = 0; test_specs[spec_idx].time > 0;) {
