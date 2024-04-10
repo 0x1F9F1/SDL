@@ -125,7 +125,7 @@ static void queue_audio()
     retval = retval ? retval : SDL_SetAudioStreamFormat(stream, &new_spec, NULL);
 
     if (!retval) {
-        retval = SDL_PutAudioStreamBuffer(stream, new_data, new_len, NULL, free_audio_buffer);
+        retval = SDL_PutAudioStreamBuffer(stream, new_data, new_len, free_audio_buffer, NULL);
 
         /* Something went wrong adding the buffer, so clean it up. */
         if (retval) {

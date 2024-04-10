@@ -852,8 +852,8 @@ typedef void (SDLCALL *SDL_ReleaseAudioBufferCallback)(void *userdata, const voi
  * \param stream The stream the audio data is being added to
  * \param buf A pointer to the audio data to add
  * \param len The number of bytes to write to the stream
- * \param userdata The userdata to be passed to the callback
  * \param callback A callback to release the buffer after it is no longer needed
+ * \param userdata The userdata to be passed to the callback
  * \returns 0 on success or a negative error code on failure; call
  *          SDL_GetError() for more information.
  *
@@ -869,7 +869,7 @@ typedef void (SDLCALL *SDL_ReleaseAudioBufferCallback)(void *userdata, const voi
  * \sa SDL_GetAudioStreamData
  * \sa SDL_GetAudioStreamQueued
  */
-extern DECLSPEC int SDLCALL SDL_PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, void* userdata, SDL_ReleaseAudioBufferCallback callback);
+extern DECLSPEC int SDLCALL SDL_PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, SDL_ReleaseAudioBufferCallback callback, void* userdata);
 
 /**
  * Get converted/resampled data from the stream.

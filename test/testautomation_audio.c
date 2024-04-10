@@ -849,7 +849,7 @@ static int put_audio_data_split(SDL_AudioStream* stream, const void* buf, int le
     }
 
     SDL_memcpy(p, buf, n);
-    ret = SDL_PutAudioStreamBuffer(stream, p, n, NULL, free_audio_buffer);
+    ret = SDL_PutAudioStreamBuffer(stream, p, n, free_audio_buffer, NULL);
 
     if (ret != 0) {
         SDL_free(p);

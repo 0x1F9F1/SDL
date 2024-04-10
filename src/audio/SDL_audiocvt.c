@@ -634,7 +634,7 @@ int SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len)
     return PutAudioStreamBuffer(stream, buf, len, NULL, NULL);
 }
 
-int SDL_PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, void* userdata, SDL_ReleaseAudioBufferCallback callback)
+int SDL_PutAudioStreamBuffer(SDL_AudioStream *stream, const void *buf, int len, SDL_ReleaseAudioBufferCallback callback, void* userdata)
 {
     if (!stream) {
         return SDL_InvalidParamError("stream");
@@ -1115,7 +1115,7 @@ int SDL_ConvertAudioSamples(const SDL_AudioSpec *src_spec, const Uint8 *src_data
 
     SDL_AudioStream *stream = SDL_CreateAudioStream(src_spec, dst_spec);
     if (stream) {
-        if ((SDL_PutAudioStreamBuffer(stream, src_data, src_len, NULL, DontFreeThisAudioBuffer) == 0) && (SDL_FlushAudioStream(stream) == 0)) {
+        if ((SDL_PutAudioStreamBuffer(stream, src_data, src_len, DontFreeThisAudioBuffer, NULL) == 0) && (SDL_FlushAudioStream(stream) == 0)) {
             dstlen = SDL_GetAudioStreamAvailable(stream);
             if (dstlen >= 0) {
                 dst = (Uint8 *)SDL_malloc(dstlen);
