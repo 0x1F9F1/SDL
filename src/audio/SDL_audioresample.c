@@ -28,25 +28,20 @@
 //     https://ccrma.stanford.edu/~jos/resample/
 
 // TODO: Support changing this at runtime?
-#if defined(SDL_SSE_INTRINSICS) || defined(SDL_NEON_INTRINSICS)
-// In <current year>, SSE is basically mandatory anyway
 // We want RESAMPLER_SAMPLES_PER_FRAME to be a multiple of 4, to make SIMD easier
-#define RESAMPLER_ZERO_CROSSINGS 6
-#else
-#define RESAMPLER_ZERO_CROSSINGS 5
-#endif
+#define RESAMPLER_SAMPLES_PER_WING 6
 
-#define RESAMPLER_SAMPLES_PER_FRAME (RESAMPLER_ZERO_CROSSINGS * 2)
+#define RESAMPLER_SAMPLES_PER_FRAME (RESAMPLER_SAMPLES_PER_WING * 2)
 
-// For a given srcpos, `srcpos + frame` are sampled, where `-RESAMPLER_ZERO_CROSSINGS < frame <= RESAMPLER_ZERO_CROSSINGS`.
+// For a given srcpos, `srcpos + frame` are sampled, where `-RESAMPLER_SAMPLES_PER_WING < frame <= RESAMPLER_SAMPLES_PER_WING`.
 // Note, when upsampling, it is also possible to start sampling from `srcpos = -1`.
-#define RESAMPLER_MAX_PADDING_FRAMES (RESAMPLER_ZERO_CROSSINGS + 1)
+#define RESAMPLER_MAX_PADDING_FRAMES (RESAMPLER_SAMPLES_PER_WING + 1)
 
 // More bits gives more precision, at the cost of a larger table.
-#define RESAMPLER_BITS_PER_ZERO_CROSSING    3
-#define RESAMPLER_SAMPLES_PER_ZERO_CROSSING (1 << RESAMPLER_BITS_PER_ZERO_CROSSING)
-#define RESAMPLER_FILTER_INTERP_BITS        (32 - RESAMPLER_BITS_PER_ZERO_CROSSING)
-#define RESAMPLER_FILTER_INTERP_RANGE       (1 << RESAMPLER_FILTER_INTERP_BITS)
+#define RESAMPLER_OVERSAMPLE_BITS 3
+#define RESAMPLER_OVERSAMPLE_RATE ((Uint32)1 << RESAMPLER_OVERSAMPLE_BITS)
+#define RESAMPLER_INTERP_BITS     (32 - RESAMPLER_OVERSAMPLE_BITS)
+#define RESAMPLER_INTERP_RANGE    ((Uint32)1 << RESAMPLER_INTERP_BITS)
 
 // ResampleFrame is just a vector/matrix/matrix multiplication.
 // It performs cubic interpolation of the filter, then multiplies that with the input.
@@ -426,59 +421,56 @@ static float BesselI0(float x)
     return sum;
 }
 
-// Pre-calculate 180 degrees of sin(pi * x) / pi
-// The speedup from this isn't huge, but it also avoids precision issues.
-// If sinf isn't available, SDL_sinf just calls SDL_sin.
-// Know what SDL_sin(SDL_PI_F) equals? Not quite zero.
-static void SincTable(float *table, int len)
+static float Sinc(float x)
 {
-    int i;
-
-    for (i = 0; i < len; ++i) {
-        table[i] = SDL_sinf(i * (SDL_PI_F / len)) / SDL_PI_F;
-    }
+    x *= SDL_PI_F;
+    return SDL_sinf(x) / x;
 }
 
-// Calculate Sinc(x/y), using a lookup table
-static float Sinc(float *table, int x, int y)
-{
-    float s = table[x % y];
-    s = ((x / y) & 1) ? -s : s;
-    return (s * y) / x;
-}
-
-Cubic ResamplerFilter[RESAMPLER_SAMPLES_PER_ZERO_CROSSING][RESAMPLER_SAMPLES_PER_FRAME];
+Cubic ResamplerFilter[RESAMPLER_OVERSAMPLE_RATE][RESAMPLER_SAMPLES_PER_FRAME];
 
 static void GenerateResamplerFilter()
 {
     enum
     {
-        // Generate samples at 3x the target resolution, so that we have samples at [0, 1/3, 2/3, 1] of each position
-        TABLE_SAMPLES_PER_ZERO_CROSSING = RESAMPLER_SAMPLES_PER_ZERO_CROSSING * 3,
-        TABLE_SIZE = RESAMPLER_ZERO_CROSSINGS * TABLE_SAMPLES_PER_ZERO_CROSSING,
+        // Oversample at 3x the target rate, so that we have samples at [0, 1/3, 2/3, 1] of each position
+        TABLE_OVERSAMPLE_RATE = RESAMPLER_OVERSAMPLE_RATE * 3,
+        TABLE_SIZE = RESAMPLER_SAMPLES_PER_WING * TABLE_OVERSAMPLE_RATE,
     };
 
     // if dB > 50, beta=(0.1102 * (dB - 8.7)), according to Matlab.
     const float dB = 80.0f;
     const float beta = 0.1102f * (dB - 8.7f);
-    const float bessel_beta = BesselI0(beta);
-    const float lensqr = TABLE_SIZE * TABLE_SIZE;
+    const float rcp_bessel_beta = 1.0f / BesselI0(beta);
+
+    // Reduce aliasing by removing higher frequencies.
+    // 48000/44100     ~= 0.919 (remove frequencies above 22050 converting from 48000 to 44100)
+    // 20000/(44100/2) ~= 0.907 (remove frequencies above 20000 converting from 44100)
+    // TODO: This should really be calculated based on src_rate and dst_rate.
+    // rolloff = SDL_min(dst_rate/src_rate) * bandwidth
+    const float rolloff = 0.9f;
+
+    // Calculate how many zero crossings we can fit with the given rolloff
+    // To maintain the same quality, you really want to expand the filter to maintain the same zero crossings instead.
+    const float zero_crossings = SDL_floorf(RESAMPLER_SAMPLES_PER_WING * rolloff);
 
     int i, j;
-
-    float sinc[TABLE_SAMPLES_PER_ZERO_CROSSING];
-    SincTable(sinc, TABLE_SAMPLES_PER_ZERO_CROSSING);
 
     // Generate one wing of the filter
     // https://en.wikipedia.org/wiki/Kaiser_window
     // https://en.wikipedia.org/wiki/Whittaker%E2%80%93Shannon_interpolation_formula
     float filter[TABLE_SIZE + 1];
-    filter[0] = 1.0f;
+    filter[0] = rolloff;
 
     for (i = 1; i <= TABLE_SIZE; ++i) {
-        float b = BesselI0(beta * SDL_sqrtf((lensqr - (i * i)) / lensqr)) / bessel_beta;
-        float s = Sinc(sinc, i, TABLE_SAMPLES_PER_ZERO_CROSSING);
-        filter[i] = b * s;
+        float x = i * (rolloff / TABLE_OVERSAMPLE_RATE);
+
+        float b = x / zero_crossings;
+        b = (b <= 1.0f) ? (BesselI0(beta * SDL_sqrtf(1.0f - (b * b))) * rcp_bessel_beta) : 0.0f;
+
+        float s = Sinc(x);
+
+        filter[i] = rolloff * b * s;
     }
 
     // Generate the coefficients for each point
@@ -488,19 +480,19 @@ static void GenerateResamplerFilter()
     // For the left wing, this means interpolating "forwards" (away from the center)
     // For the right wing, this means interpolating "backwards" (towards the center)
     //
-    // The center of the filter is at the end of the left wing (RESAMPLER_ZERO_CROSSINGS - 1)
+    // The center of the filter is at the end of the left wing (RESAMPLER_SAMPLES_PER_WING - 1)
     // The left wing is the filter, but reversed
     // The right wing is the filter, but offset by 1
     //
     // Since the right wing is offset by 1, this just means we interpolate backwards
     // between the same points, instead of forwards
     // interp(p[n], p[n+1], t) = interp(p[n+1], p[n+1-1], 1 - t) = interp(p[n+1], p[n], 1 - t)
-    for (i = 0; i < RESAMPLER_SAMPLES_PER_ZERO_CROSSING; ++i) {
-        for (j = 0; j < RESAMPLER_ZERO_CROSSINGS; ++j) {
-            const float *ys = &filter[((j * RESAMPLER_SAMPLES_PER_ZERO_CROSSING) + i) * 3];
+    for (i = 0; i < RESAMPLER_OVERSAMPLE_RATE; ++i) {
+        for (j = 0; j < RESAMPLER_SAMPLES_PER_WING; ++j) {
+            const float *ys = &filter[((j * RESAMPLER_OVERSAMPLE_RATE) + i) * 3];
 
-            Cubic *fwd = &ResamplerFilter[i][RESAMPLER_ZERO_CROSSINGS - j - 1];
-            Cubic *rev = &ResamplerFilter[RESAMPLER_SAMPLES_PER_ZERO_CROSSING - i - 1][RESAMPLER_ZERO_CROSSINGS + j];
+            Cubic *fwd = &ResamplerFilter[i][RESAMPLER_SAMPLES_PER_WING - j - 1];
+            Cubic *rev = &ResamplerFilter[RESAMPLER_OVERSAMPLE_RATE - i - 1][RESAMPLER_SAMPLES_PER_WING + j];
 
             // Calculate the cubic equation of the 4 points
             CubicLeastSquares(fwd, ys[0], ys[1], ys[2], ys[3]);
@@ -542,7 +534,7 @@ static void SetupAudioResampler(void)
     } else
 #endif
 #ifdef SDL_NEON_INTRINSICS
-    if (SDL_HasNEON()) {
+        if (SDL_HasNEON()) {
         for (i = 0; i < 8; ++i) {
             ResampleFrame[i] = ResampleFrame_Generic_NEON;
         }
@@ -560,7 +552,7 @@ static void SetupAudioResampler(void)
 
     if (transpose) {
         // Transpose each set of 4 coefficients, to reduce work when resampling
-        for (i = 0; i < RESAMPLER_SAMPLES_PER_ZERO_CROSSING; ++i) {
+        for (i = 0; i < RESAMPLER_OVERSAMPLE_RATE; ++i) {
             for (j = 0; j + 4 <= RESAMPLER_SAMPLES_PER_FRAME; j += 4) {
                 Transpose4x4(&ResamplerFilter[i][j]);
             }
@@ -674,7 +666,7 @@ void SDL_ResampleAudio(int chans, const float *src, int inframes, float *dst, in
 
     SDL_assert(resample_rate > 0);
 
-    src -= (RESAMPLER_ZERO_CROSSINGS - 1) * chans;
+    src -= (RESAMPLER_SAMPLES_PER_WING - 1) * chans;
 
     for (i = 0; i < outframes; ++i) {
         int srcindex = (int)(Sint32)(srcpos >> 32);
@@ -683,8 +675,8 @@ void SDL_ResampleAudio(int chans, const float *src, int inframes, float *dst, in
 
         SDL_assert(srcindex >= -1 && srcindex < inframes);
 
-        const Cubic *filter = ResamplerFilter[srcfraction >> RESAMPLER_FILTER_INTERP_BITS];
-        const float frac = (float)(srcfraction & (RESAMPLER_FILTER_INTERP_RANGE - 1)) * (1.0f / RESAMPLER_FILTER_INTERP_RANGE);
+        const Cubic *filter = ResamplerFilter[srcfraction >> RESAMPLER_INTERP_BITS];
+        const float frac = (float)(srcfraction & (RESAMPLER_INTERP_RANGE - 1)) * (1.0f / RESAMPLER_INTERP_RANGE);
 
         const float *frame = &src[srcindex * chans];
         resample_frame(frame, dst, filter, frac, chans);
