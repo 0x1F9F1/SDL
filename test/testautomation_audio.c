@@ -975,9 +975,7 @@ static int convert_audio_chunks(SDL_AudioStream* stream, const void* src, int sr
     dst_frame_size = SDL_AUDIO_FRAMESIZE(dst_spec);
 
     while ((total_in < srclen) || (total_out < dstlen)) {
-        /* Make sure we put in more than the padding frames so we get non-zero output */
-        const int RESAMPLER_MAX_PADDING_FRAMES = 7; /* Should match RESAMPLER_MAX_PADDING_FRAMES in SDL */
-        int to_put = SDLTest_RandomIntegerInRange(RESAMPLER_MAX_PADDING_FRAMES + 1, 40000) * src_frame_size;
+        int to_put = SDLTest_RandomIntegerInRange(1, 40000) * src_frame_size;
         int to_get = SDLTest_RandomIntegerInRange(1, (int)((40000.0f * dst_spec.freq) / src_spec.freq)) * dst_frame_size;
         to_put = SDL_min(to_put, srclen - total_in);
         to_get = SDL_min(to_get, dstlen - total_out);
@@ -1005,15 +1003,11 @@ static int convert_audio_chunks(SDL_AudioStream* stream, const void* src, int sr
         {
             ret = get_audio_data_split(stream, (Uint8*)(dst) + total_out, to_get);
 
-            if ((ret == 0) && (total_in == srclen)) {
-                ret = -1;
+            if (ret > 0) {
+                total_out += ret;
+            } else if (total_in == srclen) {
+                return total_out;
             }
-
-            if (ret < 0) {
-                return total_out ? total_out : ret;
-            }
-
-            total_out += ret;
         }
     }
 
@@ -1043,10 +1037,13 @@ static int SDLCALL audio_resampleLoss(void *arg)
     double signal_to_noise;
     double max_error;
   } test_specs[] = {
-    { 50, 440, 0, 44100, 48000, 80, 0.0010 },
-    { 50, 5000, SDL_PI_D / 2, 20000, 10000, 999, 0.0001 },
-    { 50, 440, 0, 22050, 96000, 79, 0.0120 },
-    { 50, 440, 0, 96000, 22050, 80, 0.0002 },
+    { 50, 440, 0, 44100, 48000, 80, 0.002 },
+    { 50, 4000, 0, 20000, 10000, 80, 0.002 },
+    { 50, 4000, SDL_PI_D / 2, 20000, 10000, 80, 0.002 },
+    { 50, 440, 0, 22050, 96000, 80, 0.02 },
+    { 50, 440, 0, 96000, 22050, 80, 0.001 },
+    { 50, 15000, 0, 48000, 44100, 75, 0.05 },
+    { 50, 15000, 0, 44100, 48000, 60, 0.05 },
     { 0 }
   };
 

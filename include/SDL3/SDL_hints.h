@@ -523,6 +523,16 @@ extern "C" {
 #define SDL_HINT_AUDIO_INCLUDE_MONITORS "SDL_AUDIO_INCLUDE_MONITORS"
 
 /**
+ * A variable controlling the quality of the resampler used when converting
+ * between audio formats of different sample rates.
+ * 
+ * This hint should be set before SDL is initialized.
+ *
+ * \since This hint is available since SDL 3.X.X.
+ */
+#define SDL_HINT_AUDIO_RESAMPLE_QUALITY "SDL_AUDIO_RESAMPLE_QUALITY"
+
+/**
  * A variable controlling whether SDL updates joystick state when getting
  * input events.
  *

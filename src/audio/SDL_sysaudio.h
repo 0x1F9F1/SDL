@@ -63,6 +63,7 @@ const SDL_AudioFormat *SDL_ClosestAudioFormats(SDL_AudioFormat format);
 // Must be called at least once before using converters.
 extern void SDL_ChooseAudioConverters(void);
 extern void SDL_SetupAudioResampler(void);
+extern void SDL_QuitAudioResampler(void);
 
 /* Backends should call this as devices are added to the system (such as
    a USB headset being plugged in), and should also be called for
@@ -219,6 +220,7 @@ struct SDL_AudioStream
     float gain;
 
     struct SDL_AudioQueue *queue;
+    struct SDL_AudioResampler *resampler;
 
     SDL_AudioSpec input_spec; // The spec of input data currently being processed
     int *input_chmap;

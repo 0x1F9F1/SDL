@@ -624,7 +624,7 @@ size_t SDL_GetAudioQueueQueued(SDL_AudioQueue *queue)
     return total;
 }
 
-bool SDL_ResetAudioQueueHistory(SDL_AudioQueue *queue, int num_frames)
+bool SDL_ResetAudioQueueHistory(SDL_AudioQueue *queue, int num_frames, bool soft)
 {
     SDL_AudioTrack *track = queue->head;
 
@@ -633,6 +633,11 @@ bool SDL_ResetAudioQueueHistory(SDL_AudioQueue *queue, int num_frames)
     }
 
     size_t length = num_frames * SDL_AUDIO_FRAMESIZE(track->spec);
+
+    if (soft && (length <= queue->history_length)) {
+        return true;
+    }
+
     Uint8 *history_buffer = queue->history_buffer;
 
     if (queue->history_capacity < length) {

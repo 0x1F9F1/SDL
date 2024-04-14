@@ -1280,3 +1280,6 @@
 #define SDL_PutAudioStreamDataNoCopy SDL_PutAudioStreamDataNoCopy_REAL
 #define SDL_AddAtomicU32 SDL_AddAtomicU32_REAL
 #define SDL_hid_get_properties SDL_hid_get_properties_REAL
+#define SDL_CreateAudioResampler SDL_CreateAudioResampler_REAL
+#define SDL_DestroyAudioResampler SDL_DestroyAudioResampler_REAL
+#define SDL_SetAudioStreamResampler SDL_SetAudioStreamResampler_REAL

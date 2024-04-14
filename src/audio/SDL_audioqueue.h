@@ -74,6 +74,6 @@ extern const Uint8 *SDL_ReadFromAudioQueue(SDL_AudioQueue *queue,
 // Get the total number of bytes currently queued
 extern size_t SDL_GetAudioQueueQueued(SDL_AudioQueue *queue);
 
-extern bool SDL_ResetAudioQueueHistory(SDL_AudioQueue *queue, int num_frames);
+extern bool SDL_ResetAudioQueueHistory(SDL_AudioQueue *queue, int num_frames, bool soft);
 
 #endif // SDL_audioqueue_h_

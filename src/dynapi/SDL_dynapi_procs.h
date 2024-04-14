@@ -1288,3 +1288,6 @@ SDL_DYNAPI_PROC(int,SDL_GetEventDescription,(const SDL_Event *a,char *b,int c),(
 SDL_DYNAPI_PROC(bool,SDL_PutAudioStreamDataNoCopy,(SDL_AudioStream *a,const void *b,int c,SDL_AudioStreamDataCompleteCallback d,void *e),(a,b,c,d,e),return)
 SDL_DYNAPI_PROC(Uint32,SDL_AddAtomicU32,(SDL_AtomicU32 *a,int b),(a,b),return)
 SDL_DYNAPI_PROC(SDL_PropertiesID,SDL_hid_get_properties,(SDL_hid_device *a),(a),return)
+SDL_DYNAPI_PROC(SDL_AudioResampler*,SDL_CreateAudioResampler,(int a,float b,float c),(a,b,c),return)
+SDL_DYNAPI_PROC(void,SDL_DestroyAudioResampler,(SDL_AudioResampler *a),(a),)
+SDL_DYNAPI_PROC(bool,SDL_SetAudioStreamResampler,(SDL_AudioStream *a,SDL_AudioResampler *b),(a,b),return)

@@ -2338,6 +2338,37 @@ extern SDL_DECLSPEC const char * SDLCALL SDL_GetAudioFormatName(SDL_AudioFormat 
  */
 extern SDL_DECLSPEC int SDLCALL SDL_GetSilenceValueForFormat(SDL_AudioFormat format);
 
+/**
+ * The struct used as an opaque handle to an audio resampler.
+ * \sa SDL_CreateAudioResampler
+ */
+typedef struct SDL_AudioResampler SDL_AudioResampler;
+
+/**
+ * Increasing quality causes more data to be sampled for each frame.
+ * Valid values currently range from -1 to 3, with 0 being the default.
+ * 
+ * lpf reduces aliasing by removing higher frequencies.
+ * 44100/48000     ~= 0.919 (remove frequencies above 22050 converting from 48000 to 44100)
+ * 20000/(44100/2) ~= 0.907 (remove frequencies above 20000 converting from 44100)
+ * lpf = SDL_min(dst_rate/src_rate, 1.0) * bandwidth
+ *
+ * TODO: Use properties instead
+ * 
+ * \sa SDL_SetAudioStreamResampler
+ * \sa SDL_DestroyAudioResampler
+ */
+extern SDL_DECLSPEC SDL_AudioResampler * SDLCALL SDL_CreateAudioResampler(int quality, float lpf, float db);
+
+/**
+ * Destroys an audio resampler
+ */
+extern SDL_DECLSPEC void SDLCALL SDL_DestroyAudioResampler(SDL_AudioResampler *resampler);
+
+/**
+ * Sets an audio stream's resampler. It must outlive the stream.
+ */
+extern SDL_DECLSPEC bool SDLCALL SDL_SetAudioStreamResampler(SDL_AudioStream *stream, SDL_AudioResampler *resampler);
 
 /* Ends C function definitions when using C++ */
 #ifdef __cplusplus
