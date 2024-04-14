@@ -444,7 +444,7 @@ static void GenerateResamplerFilter()
     const float rcp_bessel_beta = 1.0f / BesselI0(beta);
 
     // Reduce aliasing by removing higher frequencies.
-    // 48000/44100     ~= 0.919 (remove frequencies above 22050 converting from 48000 to 44100)
+    // 44100/48000     ~= 0.919 (remove frequencies above 22050 converting from 48000 to 44100)
     // 20000/(44100/2) ~= 0.907 (remove frequencies above 20000 converting from 44100)
     // TODO: This should really be calculated based on src_rate and dst_rate.
     // rolloff = SDL_min(dst_rate/src_rate) * bandwidth
