@@ -696,29 +696,68 @@ typedef struct SDL_Palette
 } SDL_Palette;
 
 /**
- * Details about the format of a pixel.
+ * Details about a packed integer pixel format.
  *
  * \since This struct is available since SDL 3.0.0.
  */
 typedef struct SDL_PixelFormatDetails
 {
+    /* The format being described */
     SDL_PixelFormat format;
+
+    /* The size of each pixel in bits, including any padding */
     Uint8 bits_per_pixel;
+
+    /* Size of each pixel in bytes */
     Uint8 bytes_per_pixel;
     Uint8 padding[2];
+
+    /* The masks to extract a channel from a pixel */
     Uint32 Rmask;
     Uint32 Gmask;
     Uint32 Bmask;
     Uint32 Amask;
+
+    /* The number of bits used to represent each channel */
     Uint8 Rbits;
     Uint8 Gbits;
     Uint8 Bbits;
     Uint8 Abits;
+
+    /* The offset/index of the lowest bit of the channel */
     Uint8 Rshift;
     Uint8 Gshift;
     Uint8 Bshift;
     Uint8 Ashift;
+
+    /* Q24 factors to convert each channel to 8-bit */
+    Uint32 Rcvtto8;
+    Uint32 Gcvtto8;
+    Uint32 Bcvtto8;
+    Uint32 Acvtto8;
+
+    /* Q16 factors to convert each channel from 8-bit */
+    Uint32 Rcvtfrom8;
+    Uint32 Gcvtfrom8;
+    Uint32 Bcvtfrom8;
+    Uint32 Acvtfrom8;
 } SDL_PixelFormatDetails;
+
+/**
+ * Extracts and scales a color channel from a packed integer pixel into the range 0-255
+ *
+ * \since This macro is available since SDL 3.0.0.
+ */
+#define SDL_PIXEL_UNPACK_CHANNEL(fmt, value, channel) \
+    (((((Uint32)(value) & (fmt)->channel##mask) >> (fmt)->channel##shift) * (fmt)->channel##cvtto8) >> 24)
+
+/**
+ * Scales and shifts a color channel from the range 0-255 into the specified packed integer pixel format
+ *
+ * \since This macro is available since SDL 3.0.0.
+ */
+#define SDL_PIXEL_PACK_CHANNEL(fmt, value, channel) \
+    ((((Uint32)(value) * (fmt)->channel##cvtfrom8) >> 16) << (fmt)->channel##shift)
 
 /**
  * Get the human readable name of a pixel format.
