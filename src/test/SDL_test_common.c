@@ -170,6 +170,8 @@ int SDLTest_CommonArg(SDLTest_CommonState *state, int index)
 {
     char **argv = state->argv;
 
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_ERROR, SDL_LOG_PRIORITY_VERBOSE);
+
     if ((SDL_strcasecmp(argv[index], "-h") == 0) || (SDL_strcasecmp(argv[index], "--help") == 0)) {
         /* Print the usage message */
         return -1;

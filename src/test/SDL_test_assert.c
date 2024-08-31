@@ -137,6 +137,7 @@ void SDLTest_LogAssertSummary(void)
         SDLTest_Log(SDLTEST_ASSERT_SUMMARY_FORMAT_OK, totalAsserts, SDLTest_AssertsPassed, SDLTest_AssertsFailed);
     } else {
         SDLTest_LogError(SDLTEST_ASSERT_SUMMARY_FORMAT, totalAsserts, SDLTest_AssertsPassed, SDLTest_AssertsFailed);
+        SDLTest_LogError("Last Error: %s", SDL_GetError());
     }
 }
 
