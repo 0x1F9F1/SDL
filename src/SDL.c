@@ -693,6 +693,10 @@ void SDL_Quit(void)
     SDL_Gtk_Quit();
 #endif
 
+#ifndef SDL_AUDIO_DISABLED
+    SDL_QuitAudioResampler();
+#endif
+
     SDL_QuitTimers();
     SDL_QuitAsyncIO();
 

@@ -419,7 +419,7 @@ static bool UpdateAudioStreamInputSpec(SDL_AudioStream *stream, const SDL_AudioS
         return true;
     }
 
-    if (!SDL_ResetAudioQueueHistory(stream->queue, SDL_GetResamplerHistoryFrames())) {
+    if (!SDL_ResetAudioQueueHistory(stream->queue, SDL_GetResamplerPaddingFrames(stream->resampler))) {
         return false;
     }
 
@@ -439,7 +439,6 @@ static bool UpdateAudioStreamInputSpec(SDL_AudioStream *stream, const SDL_AudioS
 SDL_AudioStream *SDL_CreateAudioStream(const SDL_AudioSpec *src_spec, const SDL_AudioSpec *dst_spec)
 {
     SDL_ChooseAudioConverters();
-    SDL_SetupAudioResampler();
 
     SDL_AudioStream *result = (SDL_AudioStream *)SDL_calloc(1, sizeof(SDL_AudioStream));
     if (!result) {
@@ -449,6 +448,7 @@ SDL_AudioStream *SDL_CreateAudioStream(const SDL_AudioSpec *src_spec, const SDL_
     result->freq_ratio = 1.0f;
     result->gain = 1.0f;
     result->queue = SDL_CreateAudioQueue(8192);
+    result->resampler = SDL_GetDefaultAudioResampler();
 
     if (!result->queue) {
         SDL_free(result);
@@ -1145,7 +1145,7 @@ static Sint64 NextAudioStreamIter(SDL_AudioStream *stream, void **inout_iter,
         // Past the end of the track, the right padding is filled with silence.
         // But we only want to do that if the track is actually finished (flushed).
         if (!flushed) {
-            output_frames -= SDL_GetResamplerPaddingFrames(resample_rate);
+            output_frames -= SDL_GetResamplerPaddingFrames(stream->resampler);
         }
 
         output_frames = SDL_GetResamplerOutputFrames(output_frames, resample_rate, &resample_offset);
@@ -1252,7 +1252,7 @@ static bool GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int o
     // In fact, input_frames can sometimes even be zero when upsampling.
     const int input_frames = (int) SDL_GetResamplerInputFrames(output_frames, resample_rate, stream->resample_offset);
 
-    const int padding_frames = SDL_GetResamplerPaddingFrames(resample_rate);
+    const int padding_frames = SDL_GetResamplerPaddingFrames(stream->resampler);
 
     const SDL_AudioFormat resample_format = SDL_AUDIO_F32;
 
@@ -1322,7 +1322,7 @@ static bool GetAudioStreamDataInternal(SDL_AudioStream *stream, void *buf, int o
     // Decide where the resampled output goes
     void *resample_buffer = (resample_buffer_offset != -1) ? (work_buffer + resample_buffer_offset) : buf;
 
-    SDL_ResampleAudio(resample_channels,
+    SDL_ResampleAudio(stream->resampler, resample_channels,
                   (const float *)input_buffer, input_frames,
                   (float *)resample_buffer, output_frames,
                   resample_rate, &stream->resample_offset);
